@@ -16,6 +16,7 @@ from typing import Literal
 
 from ..config import DeveloperWorkflowConfig
 from ..verification import digest
+from ..schedules import serialized_mutation
 from ..contracts import (
     DefectAction,
     RepositoryGroupMapping,
@@ -284,6 +285,7 @@ class TuiController:
         self._requirement_sessions: OrderedDict[str, _RequirementSession] = OrderedDict()
         self._candidate_lock = Lock()
         self._workspace_lock = Lock()
+        self.schedule_store = None
         self._closed = False
         self._async_runtime = _AsyncRuntime()
 
@@ -318,6 +320,13 @@ class TuiController:
             raise
         except Exception:
             raise TuiControllerError("task could not be deleted safely") from None
+
+    def list_workspace_runs(self, workspace: WorkspaceSummary) -> tuple[RunSummary, ...]:
+        """Only include runs with an authoritative mapping to this workspace."""
+        try:
+            return self._run_index.list(RunFilter(), workspace=workspace)
+        except Exception:
+            raise TuiControllerError("workspace tasks are unavailable") from None
 
     @property
     def default_defect_project(self) -> str:
@@ -504,6 +513,7 @@ class TuiController:
         except Exception:
             raise TuiControllerError("workspace configuration could not be saved") from None
 
+    @serialized_mutation
     def delete_workspace(self, key: str) -> None:
         """Remove one workspace mapping without touching repositories or ONES data."""
 
@@ -526,6 +536,10 @@ class TuiController:
                 candidate = DeveloperWorkflowConfig.model_validate(data)
                 saver(candidate)
                 current.repository_groups = candidate.repository_groups
+                if self.schedule_store is not None:
+                    for plan in self.schedule_store.list(key):
+                        self.schedule_store.save(plan.model_copy(update={"enabled": False}),
+                                                 expected_version=plan.version)
         except (KeyboardInterrupt, SystemExit, GeneratorExit, MemoryError):
             raise
         except Exception:
@@ -738,6 +752,7 @@ class TuiController:
 
         return self._start_defect(session_id, candidate_id, analyze_only=True)
 
+    @serialized_mutation
     def _start_defect(
         self,
         session_id: str,
@@ -1067,6 +1082,7 @@ class TuiController:
         except Exception:
             raise TuiControllerError(_ACTION_ERROR) from None
 
+    @serialized_mutation
     def _command(self, command, *args, **kwargs) -> RunDetail:
         try:
             return self._detail(command(*args, **kwargs))

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from ..state_store import FileRunStore, RunCorruptedError, RunNotFoundError
-from .models import RunActivity, RunFilter, RunSummary, TuiDisplayError
+from .models import RunActivity, RunFilter, RunSummary, TuiDisplayError, WorkspaceSummary
 
 
 class RunIndex:
@@ -18,6 +18,8 @@ class RunIndex:
         self,
         filters: RunFilter,
         activities: Mapping[str, RunActivity] | None = None,
+        *,
+        workspace: WorkspaceSummary | None = None,
     ) -> tuple[RunSummary, ...]:
         activity_by_id = activities or {}
         valid: list[RunSummary] = []
@@ -26,12 +28,22 @@ class RunIndex:
             try:
                 run = self._store.load(run_id, read_only=True)
             except RunCorruptedError:
+                if workspace is not None:
+                    continue
                 item = RunSummary.corrupted_entry(run_id)
                 if filters.matches(item):
                     corrupted.append(item)
                 continue
             except RunNotFoundError:
                 continue
+            if workspace is not None:
+                mapping = run.repository_group or run.repository
+                if mapping is None or (
+                    mapping.key != workspace.key
+                    or mapping.project_id != workspace.project_id
+                    or mapping.iteration_id != workspace.iteration_id
+                ):
+                    continue
             try:
                 item = RunSummary.from_run(
                     run,

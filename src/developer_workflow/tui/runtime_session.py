@@ -66,12 +66,15 @@ class TuiRuntimeSession:
         event_sink: Callable[[TaskEvent], None],
     ) -> "TuiRuntimeSession":
         index = RunIndex(handle.orchestrator.store)
+        from ..schedules import ScheduleStore
         controller = TuiController(
             handle.orchestrator,
             index,
             workflow_saver=getattr(handle, "workflow_saver", None),
         )
         session: TuiRuntimeSession
+
+        controller.schedule_store = ScheduleStore(handle.orchestrator.config.run_root / ".schedules")
 
         def emit(event: TaskEvent) -> None:
             session.emit(event)

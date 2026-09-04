@@ -36,6 +36,7 @@ from textual.widgets import (
 )
 
 from ..contracts import WorkflowState, WorkflowType
+from .schedule_settings import SchedulePane
 from .controller import (
     StaleCandidateError,
     StaleTuiActionError,
@@ -1179,7 +1180,8 @@ class DefectWizardScreen(_MappingWizardScreen):
 class RequirementWizardScreen(_MappingWizardScreen):
     """List ONES requirements, then enter the shared mapping flow."""
 
-    def __init__(self, controller: TuiController, supervisor: RunTaskSupervisor) -> None:
+    def __init__(self, controller: TuiController, supervisor: RunTaskSupervisor,
+                 *, workspace: WorkspaceSummary | None = None) -> None:
         super().__init__(
             controller,
             supervisor,
@@ -1187,20 +1189,27 @@ class RequirementWizardScreen(_MappingWizardScreen):
         )
         self._requirement_session_id: str | None = None
         self._requirements: tuple[RequirementChoice, ...] = ()
+        self.workspace = workspace
 
     def _initial_widgets(self) -> tuple[Widget, ...]:
-        return (
+        widgets = (
             Label("Requirements from ONES"),
             Input(placeholder="ONES requirement ID", id="requirement-id"),
             Button("Fetch requirement", id="start-requirement"),
             Label("Or query the requirement list"),
-            Input(placeholder="Optional ONES project ID", id="requirement-project"),
-            Input(placeholder="Optional ONES iteration ID", id="requirement-iteration"),
+            Input(self.workspace.project_id if self.workspace else "",
+                  placeholder="Optional ONES project ID", id="requirement-project",
+                  disabled=self.workspace is not None),
+            Input(self.workspace.iteration_id if self.workspace else "",
+                  placeholder="Optional ONES iteration ID", id="requirement-iteration",
+                  disabled=self.workspace is not None),
             Input(placeholder="Optional ONES assignee ID", id="requirement-assignee"),
             Input(placeholder="Optional status IDs, comma-separated", id="requirement-status-ids"),
             Input(placeholder="Requirement issue type ID", id="requirement-type-id"),
             Button("Query requirements", id="query-requirements", variant="primary"),
         )
+        # A workspace entry must not offer the unscoped direct-ID mutation path.
+        return widgets[3:] if self.workspace else widgets
 
     async def _query_requirements(self) -> None:
         issue_type_id = self.query_one("#requirement-type-id", Input).value.strip()
@@ -2071,16 +2080,85 @@ class WorkspaceDetailScreen(Screen[bool]):
         self.workspace = workspace
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll(id="workspace-detail-body"):
-            yield Label(self.workspace.key, classes="pane-title")
-            yield Static(f"Project: {self.workspace.project_id}", markup=False)
-            yield Static(f"Iteration: {self.workspace.iteration_id}", markup=False)
-            yield Label("Repositories")
-            yield Static("\n".join(self.workspace.repositories), markup=False)
-            yield Button("Query defects", id="workspace-query-defects", variant="primary")
-            yield Button("Delete workspace", id="workspace-delete", variant="error")
-            yield Button("Back to workspaces", id="workspace-detail-back")
-            yield Static("", id="workspace-detail-notice", markup=False)
+        with Vertical(id="workspace-detail-body"):
+            yield Static(Text(self.workspace.key, style="bold cyan"), id="workspace-heading")
+            yield Static(
+                f"项目 {self.workspace.project_id}  ·  迭代 {self.workspace.iteration_id}  ·  "
+                f"{len(self.workspace.repositories)} 个仓库", markup=False, id="workspace-scope")
+            with TabbedContent(id="workspace-modules"):
+                with TabPane("查询缺陷", id="workspace-defects-tab"):
+                    with VerticalScroll(classes="workspace-module-body"):
+                        yield Static("缺陷分析与修复", classes="workspace-module-title")
+                        yield Static("查询当前项目和迭代的缺陷，按负责人、状态筛选，再选择仅分析或分析并修复。",
+                                     classes="workspace-module-description")
+                        yield Button("查询缺陷", id="workspace-query-defects", variant="primary")
+                        with Collapsible(title="关联仓库", collapsed=True):
+                            yield Static("\n".join(self.workspace.repositories), markup=False)
+                with TabPane("查询需求", id="workspace-requirements-tab"):
+                    with VerticalScroll(classes="workspace-module-body"):
+                        yield Static("需求查询与实现", classes="workspace-module-title")
+                        yield Static("自动带入本工作区项目和迭代。查询需求后选择目标，继续仓库映射与实现流程。",
+                                     classes="workspace-module-description")
+                        yield Button("查询需求", id="workspace-query-requirements", variant="primary")
+                with TabPane("任务列表", id="workspace-tasks-tab"):
+                    yield Static("本工作区的缺陷与需求任务；未绑定工作区的任务请到全局 Tasks 查看。",
+                                 classes="workspace-module-description")
+                    yield Button("刷新任务", id="workspace-refresh-tasks")
+                    yield Static("尚未加载", id="workspace-task-status", markup=False)
+                    yield ListView(id="workspace-task-list")
+                with TabPane("定时任务", id="workspace-schedules-tab"):
+                    yield SchedulePane(self._controller, self._supervisor, self.workspace)
+        yield Static("", id="workspace-detail-notice", markup=False)
+        with Horizontal(id="workspace-detail-footer"):
+            yield Button("返回工作区", id="workspace-detail-back")
+            yield Button("删除工作区", id="workspace-delete", variant="error")
+
+    @on(Button.Pressed, "#workspace-query-requirements")
+    def _query_requirements(self) -> None:
+        self.app.push_screen(RequirementWizardScreen(
+            self._controller, self._supervisor, workspace=self.workspace,
+        ), callback=self._workflow_started)
+
+    @on(TabbedContent.TabActivated, "#workspace-modules")
+    async def _module_changed(self, event: TabbedContent.TabActivated) -> None:
+        if event.pane.id == "workspace-tasks-tab":
+            await self._refresh_tasks()
+
+    @on(Button.Pressed, "#workspace-refresh-tasks")
+    async def _refresh_tasks(self) -> None:
+        status = self.query_one("#workspace-task-status", Static)
+        button = self.query_one("#workspace-refresh-tasks", Button)
+        button.disabled = True
+        status.update("正在加载任务…")
+        listing = self.query_one("#workspace-task-list", ListView)
+        try:
+            runs = await self._supervisor.run_readonly(
+                "workspace-tasks", self._controller.list_workspace_runs, self.workspace)
+            await listing.clear()
+            await listing.extend([
+                ListItem(Label(Text.from_markup(
+                    f"{'缺陷' if item.workflow_type is WorkflowType.DEFECT else '需求'}  "
+                    f"{item.work_item_id}  ·  {item.state.value}  ·  "
+                    f"{item.updated_at.astimezone().strftime('%m-%d %H:%M')}"
+                ), markup=False), name=item.run_id)
+                for item in runs
+            ])
+            status.update(f"共 {len(runs)} 项任务 · 选择任务查看详情" if runs else "本工作区暂无已绑定任务")
+        except Exception:
+            await listing.clear()
+            status.update("任务加载失败，请重试")
+        finally:
+            button.disabled = False
+
+    @on(ListView.Selected, "#workspace-task-list")
+    async def _open_workspace_task(self, event: ListView.Selected) -> None:
+        if event.item.name:
+            try:
+                detail = await self._supervisor.run_readonly(
+                    "workspace-task-detail", self._controller.show, event.item.name)
+                self._workflow_started(detail)
+            except Exception:
+                self.query_one("#workspace-task-status", Static).update("任务详情暂不可用，请刷新后重试")
 
     @on(Button.Pressed, "#workspace-query-defects")
     def _query_defects(self) -> None:

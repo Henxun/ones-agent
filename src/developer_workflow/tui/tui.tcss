@@ -299,6 +299,47 @@ WorkspaceDeleteConfirmation > VerticalScroll {
     padding: 1 2;
 }
 
+#workspace-heading {
+    height: auto;
+    padding: 0 1;
+}
+
+#workspace-scope {
+    height: auto;
+    color: $text-muted;
+    padding: 0 1 1 1;
+}
+
+#workspace-modules, #workspace-modules > ContentSwitcher,
+#workspace-modules TabPane {
+    height: 1fr;
+}
+
+#workspace-modules TabPane {
+    padding: 1;
+    background: $surface;
+}
+
+.workspace-module-body { height: 1fr; }
+.workspace-module-title {
+    height: auto;
+    text-style: bold;
+    color: $accent;
+    margin-bottom: 1;
+}
+.workspace-module-description {
+    height: auto;
+    margin-bottom: 1;
+}
+#workspace-task-list { height: 1fr; }
+#workspace-task-status, #workspace-detail-notice { height: auto; }
+#workspace-detail-footer {
+    height: 3;
+    padding: 0 2;
+    align-horizontal: right;
+}
+#workspace-detail-footer Button { margin-left: 1; }
+
 #workspace-create-body Input,
 #workspace-create-body Select,
 #workspace-create-body Button,

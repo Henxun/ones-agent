@@ -132,6 +132,8 @@ class DeveloperWorkflowTuiApp(App[None]):
         self._active_handle_identity: int | None = None
         self._pending_runtime_handle: object | None = None
         self._poll_timer: Timer | None = None
+        self._schedule_timer = None
+        self._schedule_task = None
         self._reconfiguring = False
         app_ref = weakref.ref(self)
 
@@ -432,6 +434,22 @@ class DeveloperWorkflowTuiApp(App[None]):
         self._poll_timer = self.set_interval(
             self.poll_interval, self.refresh_runs
         )
+        if self._schedule_timer is not None:
+            self._schedule_timer.stop()
+        self._schedule_timer = self.set_interval(10, self._dispatch_schedules)
+
+    def _dispatch_schedules(self) -> None:
+        if self._ui_closed or self._reconfiguring or self.runtime_session is None:
+            return
+        if self._schedule_task is not None and not self._schedule_task.done():
+            return
+        controller = self.runtime_session.controller
+        if getattr(controller, "schedule_store", None) is None or self.runtime_session.supervisor.closed:
+            return
+        from ..schedules import dispatch
+        self._schedule_task = self.runtime_session.supervisor.submit(
+            "schedule-dispatch", "scheduled-scan", lambda: dispatch(controller))
+        self._schedule_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
 
     async def _replace_with_runtime(self, handle: object) -> bool:
         session: TuiRuntimeSession | None = None
@@ -643,6 +661,9 @@ class DeveloperWorkflowTuiApp(App[None]):
                 raise RuntimeError("workflow is active")
             if self._ui_closed or self.runtime_session is None:
                 return
+            if self._schedule_timer is not None:
+                self._schedule_timer.stop()
+                self._schedule_timer = None
             if self._poll_timer is not None:
                 self._poll_timer.stop()
                 self._poll_timer = None
@@ -868,6 +889,9 @@ class DeveloperWorkflowTuiApp(App[None]):
                 self._close_started = True
                 self._ui_closed = True
                 self._accept_events = False
+                if self._schedule_timer is not None:
+                    self._schedule_timer.stop()
+                    self._schedule_timer = None
                 if self._poll_timer is not None:
                     self._poll_timer.stop()
                     self._poll_timer = None
