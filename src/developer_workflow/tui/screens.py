@@ -2136,19 +2136,36 @@ class WorkspaceDetailScreen(Screen[bool]):
                 "workspace-tasks", self._controller.list_workspace_runs, self.workspace)
             await listing.clear()
             await listing.extend([
-                ListItem(Label(Text.from_markup(
-                    f"{'缺陷' if item.workflow_type is WorkflowType.DEFECT else '需求'}  "
-                    f"{item.work_item_id}  ·  {item.state.value}  ·  "
-                    f"{item.updated_at.astimezone().strftime('%m-%d %H:%M')}"
-                ), markup=False), name=item.run_id)
+                self._workspace_task_card(item)
                 for item in runs
             ])
-            status.update(f"共 {len(runs)} 项任务 · 选择任务查看详情" if runs else "本工作区暂无已绑定任务")
+            status.update(f"共 {len(runs)} 项任务 · 点击卡片或 ↑↓ 选择后按 Enter 查看详情" if runs else "本工作区暂无已绑定任务")
         except Exception:
             await listing.clear()
             status.update("任务加载失败，请重试")
         finally:
             button.disabled = False
+
+    @staticmethod
+    def _workspace_task_card(item: RunSummary) -> ListItem:
+        state = item.state.value
+        tone = ("attention" if state in {"BLOCKED", "WAITING_APPROVAL", "WAITING_PR_VERIFICATION", "PARTIAL_SUCCESS"}
+                else "failed" if state == "FAILED"
+                else "complete" if state == "COMPLETED" else "normal")
+        return ListItem(
+            Vertical(
+                Static(Text.from_markup(
+                    f"{'缺陷' if item.workflow_type is WorkflowType.DEFECT else '需求'}  ·  {item.work_item_id}"),
+                    markup=False, classes="workspace-task-title"),
+                Static(f"{detail_rendering.state_name(state)}  ·  {state}",
+                       markup=False, classes="workspace-task-state"),
+                Static(f"更新时间：{item.updated_at.astimezone().strftime('%Y-%m-%d %H:%M')}  ·  版本 {item.version}",
+                       markup=False, classes="workspace-task-meta"),
+                Static(Text.from_markup(f"任务 ID：{item.run_id}"), markup=False,
+                       classes="workspace-task-meta"),
+                Static("查看任务详情 →", classes="workspace-task-open"),
+                classes="workspace-task-content"),
+            name=item.run_id, classes=f"workspace-task-card {tone}")
 
     @on(ListView.Selected, "#workspace-task-list")
     async def _open_workspace_task(self, event: ListView.Selected) -> None:

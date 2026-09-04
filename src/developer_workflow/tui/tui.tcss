@@ -332,6 +332,28 @@ WorkspaceDeleteConfirmation > VerticalScroll {
     margin-bottom: 1;
 }
 #workspace-task-list { height: 1fr; }
+#workspace-task-list .workspace-task-card {
+    height: auto;
+    border: round $primary;
+    background: $surface;
+    margin-bottom: 1;
+    padding: 0 1;
+}
+#workspace-task-list .workspace-task-content,
+#workspace-task-list .workspace-task-card Static { height: auto; }
+#workspace-task-list .workspace-task-title { text-style: bold; }
+#workspace-task-list .workspace-task-state { color: $accent; }
+#workspace-task-list .attention { border: round $warning; }
+#workspace-task-list .attention .workspace-task-state { color: $warning; }
+#workspace-task-list .failed { border: round $error; }
+#workspace-task-list .failed .workspace-task-state { color: $error; }
+#workspace-task-list .complete .workspace-task-state { color: $success; }
+#workspace-task-list .workspace-task-meta { color: $text-muted; }
+#workspace-task-list .workspace-task-open { color: $accent; margin-top: 1; }
+#workspace-task-list .workspace-task-card.-highlight {
+    border: round $accent;
+    background: $boost;
+}
 #workspace-task-status, #workspace-detail-notice { height: auto; }
 #workspace-detail-footer {
     height: 3;

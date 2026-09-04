@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, UTC
 from types import SimpleNamespace
 
 import pytest
 from textual.app import App
 from textual.widgets import Button, Input, ListView, Static, TabbedContent
 
-from src.developer_workflow.contracts import RepositoryMapping, WorkflowRun
-from src.developer_workflow.tui.models import RunFilter, WorkspaceSummary
+from src.developer_workflow.contracts import RepositoryMapping, WorkflowRun, WorkflowState, WorkflowType
+from src.developer_workflow.tui.models import RunFilter, WorkspaceSummary, RunSummary, RunActivity
 from src.developer_workflow.tui.run_index import RunIndex
 from src.developer_workflow.tui.screens import WorkspaceDetailScreen, RequirementWizardScreen
 
@@ -62,6 +63,46 @@ class WorkspaceApp(App):
 
     async def on_mount(self):
         await self.push_screen(WorkspaceDetailScreen(self.controller, Supervisor(), WORKSPACE))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(80, 24), (140, 42)])
+async def test_workspace_task_cards_and_navigation(size):
+    app = WorkspaceApp()
+    runs = tuple(RunSummary(
+        run_id=str(i) * 32, workflow_type=WorkflowType.DEFECT if i == 1 else WorkflowType.REQUIREMENT,
+        work_item_id=f"ITEM-{i}", state=state, version=i, updated_at=datetime.now(UTC), activity=RunActivity.IDLE)
+        for i, state in enumerate((WorkflowState.BLOCKED, WorkflowState.COMPLETED), 1))
+    app.controller.list_workspace_runs = lambda workspace: runs
+    app.controller.show = lambda run_id: run_id
+    opened = []
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        screen._workflow_started = opened.append
+        screen.query_one("#workspace-modules", TabbedContent).active = "workspace-tasks-tab"
+        for _ in range(30):
+            await pilot.pause(0.05)
+            if len(screen.query(".workspace-task-card")) == 2:
+                break
+        cards = list(screen.query(".workspace-task-card"))
+        assert len(cards) == 2
+        assert cards[1].region.y > cards[0].region.bottom
+        assert cards[0].has_class("attention")
+        assert cards[1].has_class("complete")
+        for card in cards:
+            assert len(card.query(".workspace-task-meta")) == 2
+            assert card.query_one(".workspace-task-open").region.bottom < card.region.bottom
+        assert screen.query_one("#workspace-detail-back").region.bottom <= size[1]
+        await pilot.click(cards[0].query_one(".workspace-task-title"))
+        await pilot.pause()
+        assert opened == [runs[0].run_id]
+        listing = screen.query_one("#workspace-task-list", ListView)
+        listing.focus()
+        listing.index = 1
+        await pilot.press("enter")
+        await pilot.pause()
+        assert opened[-1] == runs[1].run_id
 
 
 @pytest.mark.asyncio
