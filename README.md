@@ -31,8 +31,8 @@ Codex 登录。安装、路径、安全边界和实机验收以
 macOS 上的 ONES 凭据使用当前用户默认 Keychain/search list，Codex 操作
 受原生可执行文件的来源、签名、权限和执行前重验保护。当前 MVP 以
 `danger-full-access` 运行 Codex，不启用 OS sandbox；用户可主动添加可信的远程
-Git 仓库进行只读 clone/fetch，但显式导入 Git 凭据及
-commit/push/PR/ONES 评论发布均禁用。请只添加和运行可信仓库。
+Git 仓库。TUI 使用本机 Git 配置进行认证和提交，审批后可提交、推送并创建 Draft PR/MR；
+创建 PR/MR 仍需配置平台令牌，不自动合并或发布。请只添加和运行可信仓库。
 
 已有非交互环境配置仍可使用：
 

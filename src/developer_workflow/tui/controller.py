@@ -96,6 +96,10 @@ class ApprovalMembersError(TuiControllerError):
     """Only fixed, non-sensitive member lookup diagnostics may cross the UI."""
 
 
+class PublicationConfigurationError(TuiControllerError):
+    """Publication requires the user to configure provider credentials."""
+
+
 class StaleTuiActionError(TuiControllerError):
     """The authoritative workflow no longer matches the reviewed facts."""
 
@@ -971,6 +975,8 @@ class TuiController:
     ) -> DangerousActionRequest:
         if action in {"approve", "resume-publication"} and not self._publishing_enabled:
             raise TuiControllerError(_ACTION_UNAVAILABLE)
+        if action in {"approve", "resume-publication"}:
+            self._check_publication_credentials()
         try:
             request = DangerousActionRequest.from_run(
                 self._orchestrator.show(run_id, read_only=True), action=action
@@ -1048,6 +1054,7 @@ class TuiController:
     def approve(self, request: DangerousActionRequest, actor: str) -> RunDetail:
         if not self._publishing_enabled:
             raise TuiControllerError(_ACTION_UNAVAILABLE)
+        self._check_publication_credentials()
         self._assert_request(request, "approve")
         if actor not in {member.id for member in request.approvers}:
             raise TuiControllerError("请从 ONES 成员列表选择审批人")
@@ -1087,12 +1094,22 @@ class TuiController:
     def resume_publication(self, request: DangerousActionRequest) -> RunDetail:
         if not self._publishing_enabled:
             raise TuiControllerError(_ACTION_UNAVAILABLE)
+        self._check_publication_credentials()
         self._assert_request(request, "resume-publication")
         return self._dangerous(
             self._orchestrator.resume,
             request.run_id,
             expected_version=request.version,
         )
+
+    def _check_publication_credentials(self) -> None:
+        client = getattr(getattr(self._orchestrator, "publisher", None), "pr_client", None)
+        check = getattr(client, "validate_credentials", None)
+        if callable(check):
+            try:
+                check()
+            except Exception:
+                raise PublicationConfigurationError("请先到 Configuration → 运行信息 → 配置 PR/MR 发布，设置平台令牌。") from None
 
     def _assert_request(self, request: DangerousActionRequest, action: str) -> None:
         if not isinstance(request, DangerousActionRequest) or request.action != action:

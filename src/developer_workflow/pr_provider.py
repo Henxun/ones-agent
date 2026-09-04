@@ -11,6 +11,7 @@ import re
 import httpx
 
 from .contracts import validate_git_ref_name
+from .provider_endpoints import provider_api_host_matches
 
 
 class PullRequestProviderError(RuntimeError):
@@ -95,7 +96,7 @@ class HttpPullRequestClient:
         if (
             parsed.scheme != "https"
             or parsed.hostname is None
-            or parsed.hostname.casefold() != self.provider_host.casefold()
+            or not provider_api_host_matches(self.provider_host, parsed.hostname)
             or parsed.username is not None
             or parsed.password is not None
             or parsed.query
@@ -116,6 +117,10 @@ class HttpPullRequestClient:
         if self.provider == "github":
             return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
         return {"PRIVATE-TOKEN": token}
+
+    def validate_credentials(self) -> None:
+        """Fail before Git writes when publication credentials are absent."""
+        self._headers()
 
     def _get(self, path: str, params: dict[str, object]) -> object:
         for attempt in range(1, self.max_attempts + 1):

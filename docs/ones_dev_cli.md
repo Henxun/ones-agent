@@ -43,8 +43,8 @@ npm/NVM 中的原生 Codex、Node、JavaScript、`.cmd` 或 `.ps1`。Windows 首
 
 `--config` 指向的示例文件只用于导入，不会被改写；其中的标识符和地址仍是占位符。
 首次配置或已保存配置不完整时，TUI 会进入受限配置模式，而不是要求用户先在终端中
-准备完整配置。当前生产 MVP 仅开放 ONES 与 Review 两步，仓库和运行目录按启动工作区
-安全装配；托管 profile、仓库组、Git provider 与其它高级配置步骤暂不暴露。每一步只
+准备完整配置。当前生产入口开放 ONES、Git provider 与 Review，仓库和运行目录按启动工作区
+安全装配；托管 profile 等高级配置步骤暂不暴露。每一步只
 执行对应的只读连接或能力检查；Review
 确认并再次显式确认“保存并激活”之前，不会构建生产 Orchestrator，也不会创建 run、
 mirror、worktree、commit、push、PR 或写入 ONES。
@@ -96,8 +96,13 @@ run 的 mutation 始终 FIFO 串行，底层 operation lock 和 version CAS 仍�
 退出不会把后台任务解释为取消；已持久化检查点保留在私有 `run_root`，再次启动后
 只从 `FileRunStore` 恢复。异常退出后可先查看详情，再使用 `r` 从允许的检查点继续。
 
-以下多仓库和发布流程描述完整非交互能力模型，不表示当前 TUI MVP 已开放
-commit、push、PR 或 ONES 评论。TUI MVP 到审核包为止，所有发布入口均禁用。
+TUI 已开放人工审批后的 commit、push 和 Draft PR/MR。已有安装可从
+Configuration → 运行信息 → 配置 PR/MR 发布进入向导，配置平台、API、令牌及提交身份。
+没有平台令牌时，审批入口提示先配置，不会先提交或推送。启用能力不代表批准当前任务。
+
+TUI 使用本机 Git 全局/系统配置及凭据助手、SSH 配置/agent，提交身份取本机 user.name/user.email。
+不复制源仓库的 .git/config 到隔离工作区，仓库地址与目标分支仍由已批准的映射决定。
+仍禁用仓库 hooks 和终端认证提示；凭据未就绪时请先在本机完成认证。PR/MR API 另需平台令牌。
 
 配置 `source_path` 时，本地 source workspace 始终只读；镜像、修改、测试、commit
 和 push 只发生在隔离的 managed worktree。一个工作项可映射到有向无环的

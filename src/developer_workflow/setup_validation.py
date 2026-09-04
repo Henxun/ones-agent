@@ -5,6 +5,7 @@ transport, process, credential and filesystem errors never cross its boundary.
 """
 
 from __future__ import annotations
+from .provider_endpoints import provider_api_host_matches
 
 import asyncio
 from dataclasses import dataclass, field
@@ -195,7 +196,7 @@ class ProviderProbeInput(SetupModel):
         if (
             parsed.scheme != "https"
             or parsed.hostname is None
-            or parsed.hostname.casefold() != self.host.casefold()
+            or not provider_api_host_matches(self.host, parsed.hostname)
             or parsed.username is not None
             or parsed.password is not None
             or parsed.query

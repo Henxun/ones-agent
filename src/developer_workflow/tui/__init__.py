@@ -51,7 +51,7 @@ def run_tui(setup_controller: object, runtime_bootstrapper: object) -> None:
         # has no OS sandbox profile.  Keep the settings projection aligned
         # with the runtime assembly instead of inferring a capability by OS.
         sandbox_configured=False,
-        publishing_enabled=False,
+        publishing_enabled=True,
     ).run()
 
 __all__ = [

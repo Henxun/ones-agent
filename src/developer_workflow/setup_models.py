@@ -1,6 +1,7 @@
 """Strict, secret-free bootstrap configuration and explicit runtime inputs."""
 
 from __future__ import annotations
+from .provider_endpoints import provider_api_host_matches
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -336,7 +337,7 @@ class RuntimePublicConfig(SetupModel):
     @model_validator(mode="after")
     def validate_provider_host_binding(self) -> RuntimePublicConfig:
         provider_url = urlsplit(self.provider_api_url)
-        if _canonical_host(provider_url.hostname) != self.provider_host:
+        if not provider_api_host_matches(self.provider_host, provider_url.hostname):
             raise ValueError("provider_api_url host must match provider_host")
         return self
 
@@ -381,7 +382,7 @@ class ProviderProbePublicConfig(SetupModel):
 
     @model_validator(mode="after")
     def validate_binding(self) -> ProviderProbePublicConfig:
-        if _canonical_host(urlsplit(self.api_url).hostname) != self.host:
+        if not provider_api_host_matches(self.host, urlsplit(self.api_url).hostname):
             raise ValueError("provider endpoint is invalid")
         return self
 

@@ -451,6 +451,26 @@ def _isolated_git_environment(
     return environment
 
 
+def _local_git_environment(supplied: Mapping[str, str], *, controlled_temp: Path) -> dict[str, str]:
+    """Opt-in user configuration for Git, without changing the parent process."""
+    environment = _isolated_git_environment(supplied, controlled_temp=controlled_temp)
+    for key in tuple(environment):
+        if key.startswith("GIT_CONFIG_") or key in {"GIT_SSH", "GIT_SSH_COMMAND"}:
+            environment.pop(key)
+    for key in ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME",
+                "SSH_AUTH_SOCK", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS"):
+        environment.pop(key, None)
+        if key in os.environ:
+            environment[key] = os.environ[key]
+    environment.setdefault("HOME", str(Path.home()))
+    environment.update(supplied)
+    # Trust the user's helpers and SSH configuration, but do not execute repo hooks.
+    environment.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath",
+                        "GIT_CONFIG_VALUE_0": os.devnull, "GIT_TERMINAL_PROMPT": "0",
+                        "GCM_INTERACTIVE": "Never"})
+    return environment
+
+
 def _default_command_runner(
     command: Sequence[str], cwd: Path | None
 ) -> subprocess.CompletedProcess[bytes]:
@@ -584,8 +604,11 @@ class WorktreeRepository:
     max_patch_bytes: int = 10 * 1024 * 1024
     max_untracked_file_bytes: int = 50 * 1024 * 1024
     max_snapshot_bytes: int = 100 * 1024 * 1024
+    use_local_git_config: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.use_local_git_config) is not bool:
+            raise ValueError("use_local_git_config must be boolean")
         for value in (
             self.max_patch_bytes,
             self.max_untracked_file_bytes,
@@ -612,6 +635,8 @@ class WorktreeRepository:
             raise RepositoryBoundaryError("explicit Git environment is unavailable") from None
         if not isinstance(supplied, Mapping):
             raise RepositoryBoundaryError("explicit Git environment is invalid")
+        if self.use_local_git_config:
+            return _local_git_environment(supplied, controlled_temp=self._controlled_git_temp)
         identity_values = validate_git_identity_environment(identity)
         environment = _isolated_git_environment(
             supplied,

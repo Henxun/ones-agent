@@ -619,7 +619,7 @@ def test_run_tui_reports_mvp_sandbox_as_not_configured(
     assert calls[-1] == "run"
     assert isinstance(calls[0], dict)
     assert calls[0]["sandbox_configured"] is False
-    assert calls[0]["publishing_enabled"] is False
+    assert calls[0]["publishing_enabled"] is True
 
 
 def _git(*args: str, cwd: Path) -> str:

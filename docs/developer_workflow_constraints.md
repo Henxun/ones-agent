@@ -41,6 +41,14 @@
 
 ## 环境和界面
 
+- 用户明确允许 TUI 使用本机 Git 配置：提交身份、全局/系统配置、credential helper、SSH 配置及 agent。
+  TUI 生产入口开启 use_local_git_config；其它入口默认保持隔离模式。不得因此复制或记录密钥、令牌，
+  不继承 GIT_CONFIG_COUNT 等环境注入，不自动执行仓库 hooks，不取消人工审批；MR/PR API 仍须平台令牌。
+
+- TUI 开放人工审批后的 commit、push 与 Draft PR/MR 创建，不再使用 MVP 发布禁用开关或占位客户端。
+  GitHub/GitLab 的连接与令牌通过发布配置向导验证并安全保存；缺少令牌须在提交代码前提示配置。
+  启用发布能力不等于批准任何任务，不授予合并、发布产品或自动变更 ONES 状态的权限。
+
 - 工作区显示名称单独保存在配置的 workspace_names 中，支持中文和空格；内部 key 不参与重命名。
   旧配置缺失名称时回退显示 key。新建界面生成稳定 ID，任务、定时计划和仓库映射始终按 ID 关联。
 
@@ -51,8 +59,8 @@
 - ONES 配置 tab 直接展示编辑表单，不再以按钮跳转到另一编辑页。公开字段回填；账号/密码不回显，留空保留已有凭据，更换服务地址须显式提供新凭据。保存复用配置校验、凭据存储及运行环境切换，保留节点、仓库和工作流配置；不能把浏览配置等同于保存。
 - 外部验证与代码问题分别展示。列表存在待验证项，不代表它们就是当前阻断原因。
 - 无法确定异常原因时明确写“未知/内部检查失败”，不把通用异常改述为“需要人工验证”。
-- Git 配置隔离不能导致本机已授权凭据完全不可用。Windows 通过固定的 Git Credential Manager、macOS 通过 osxkeychain 接入系统凭据库；显式 GIT_ASKPASS 优先。不继承任意 helper 脚本、全局配置、hooks 或环境注入，仍禁止交互登录，不输出/持久化明文凭据。其它平台的凭据通道需单独实现，不声称已有同等支持。
-- Windows SSH 默认通道从系统 API 定位当前用户配置目录，仅使用已有普通文件 known_hosts 和标准命名密钥；不读取密钥内容，不继承 ssh config/ProxyCommand，不信任任务传入的 HOME。保持 StrictHostKeyChecking=yes、BatchMode=yes、UpdateHostKeys=no；显式 SSH 配置优先。没有信任记录或可用密钥时仍失败，不关闭校验、不自动接受主机指纹。
+- 隔离模式（未启用本机 Git 配置）不能导致本机已授权凭据完全不可用。Windows 通过固定的 Git Credential Manager、macOS 通过 osxkeychain 接入系统凭据库；显式 GIT_ASKPASS 优先。不继承任意 helper 脚本、全局配置、hooks 或环境注入，仍禁止交互登录，不输出/持久化明文凭据。其它平台的凭据通道需单独实现，不声称已有同等支持。
+- 隔离模式的 Windows SSH 默认通道从系统 API 定位当前用户配置目录，仅使用已有普通文件 known_hosts 和标准命名密钥；不读取密钥内容，不继承 ssh config/ProxyCommand，不信任任务传入的 HOME。保持 StrictHostKeyChecking=yes、BatchMode=yes、UpdateHostKeys=no；显式 SSH 配置优先。没有信任记录或可用密钥时仍失败，不关闭校验、不自动接受主机指纹。
 
 ## 必须保持的回归覆盖
 

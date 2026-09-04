@@ -776,18 +776,6 @@ def build_production_tui_host(template_path: Path) -> tuple[object, object]:
         codex_cache_root=host_paths.cache_root,
     )
     preparer = validation.codex_runtime_preparer
-    class _MvpPullRequestClient:
-        """Keep MVP analysis/repair local; publishing remains explicitly unavailable."""
-
-        def close(self) -> None:
-            return None
-
-        def find(self, **_kwargs: object) -> None:
-            raise RuntimeError("publishing is unavailable in MVP mode")
-
-        def create(self, **_kwargs: object) -> str:
-            raise RuntimeError("publishing is unavailable in MVP mode")
-
     def validate_mvp_sandbox_profile(
         profile: str,
         source: SandboxPermissionProfileSource,
@@ -834,6 +822,7 @@ def build_production_tui_host(template_path: Path) -> tuple[object, object]:
         return DirectConfiguredTestRunner()
 
     runtime_builder = WorkflowRuntimeBootstrapper(
+        use_local_git_config=True,
         codex_runtime_preparer=preparer,
         sandbox_profile_validator=validate_mvp_sandbox_profile,
     )
@@ -888,7 +877,6 @@ def build_production_tui_host(template_path: Path) -> tuple[object, object]:
     runtime_builder.adapters = RuntimeAdapterBundle(
         codex_factory=build_unsandboxed_mvp_codex,
         sandbox_factory=build_direct_mvp_test_runner,
-        pr_factory=lambda **_kwargs: _MvpPullRequestClient(),
     )
     draft = SetupDraft(
         runtime=RuntimePublicConfig(
@@ -899,7 +887,7 @@ def build_production_tui_host(template_path: Path) -> tuple[object, object]:
                 "/project/api/project/team/{team_id}/task/{item_id}/comments"
             ),
             provider_host="github.com",
-            provider_api_url="https://github.com/api/v3",
+            provider_api_url="https://api.github.com",
             git_author_name="ONES Dev Agent",
             git_author_email="ones-dev@localhost",
             codex_auth_mode="file",
@@ -915,7 +903,7 @@ def build_production_tui_host(template_path: Path) -> tuple[object, object]:
             runtime_builder=runtime_builder,
             runtime_bootstrap=validation,
             draft=draft,
-            steps=(SetupStep.ONES, SetupStep.REVIEW),
+            steps=(SetupStep.ONES, SetupStep.PROVIDER, SetupStep.REVIEW),
             activation_timeout=180.0,
         )
 

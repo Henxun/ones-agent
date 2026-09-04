@@ -431,7 +431,9 @@ def test_production_tui_host_shares_validation_codex_preparer_with_runtime(
             *,
             codex_runtime_preparer: object,
             sandbox_profile_validator: object,
+            use_local_git_config: bool,
         ) -> None:
+            assert use_local_git_config is True
             events.append(("workflow", codex_runtime_preparer))
             self.codex_runtime_preparer = codex_runtime_preparer
             self.sandbox_profile_validator = sandbox_profile_validator
@@ -985,6 +987,8 @@ def test_tui_access_errors_are_optional_without_exception_chain(
     monkeypatch.chdir(tmp_path)
     factory, _runtime = build_production_tui_host(tmp_path / "missing.json")
     assert factory.import_context.dotenv_path is None  # type: ignore[attr-defined]
+    assert _runtime.use_local_git_config is True
+    assert _runtime.adapters.pr_factory is None
 
 
 @pytest.mark.parametrize("failure", [MemoryError, RuntimeError])

@@ -602,6 +602,11 @@ class SetupController:
                         }
                     )
                     draft.runtime = RuntimePublicConfig.model_validate(runtime_data)
+                elif step is SetupStep.PROVIDER and draft.runtime is not None:
+                    runtime_data = draft.runtime.model_dump(mode="python", round_trip=True)
+                    runtime_data.update({name: runtime_fields[name] for name in (
+                        "provider_host", "provider_api_url", "git_author_name", "git_author_email")})
+                    draft.runtime = RuntimePublicConfig.model_validate(runtime_data)
             if draft.runtime is None and all(
                 name in runtime_fields
                 for name in (

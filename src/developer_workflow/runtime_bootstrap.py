@@ -299,6 +299,7 @@ class RuntimeBootstrapper:
     workflow_saver: (
         Callable[[ActiveSetup, DeveloperWorkflowConfig], None] | None
     ) = field(default=None, repr=False)
+    use_local_git_config: bool = False
 
     @staticmethod
     def _profile_provenance(
@@ -491,6 +492,9 @@ class RuntimeBootstrapper:
                 *workflow.repositories,
                 *(repo for group in workflow.repository_groups for repo in group.repositories),
             ):
+                # The bootstrap placeholder is not an executable ONES mapping.
+                if mapping.key == "workspace" and mapping.project_id == "pending-project" and mapping.iteration_id == "*":
+                    continue
                 if Path(mapping.repo_url).is_absolute():
                     if provider_token:
                         raise ValueError
@@ -517,6 +521,7 @@ class RuntimeBootstrapper:
                     worktree_root,
                     credential_env_provider=credential_provider,
                     identity_env_provider=identity_provider,
+                    use_local_git_config=self.use_local_git_config,
                 )
             else:
                 repository = self.adapters.repository_factory(

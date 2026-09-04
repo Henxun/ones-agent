@@ -1376,6 +1376,23 @@ def test_first_codex_materialization_rejects_unvalidated_runtime_prefix(
     assert controller.result_for(SetupStep.ONES).status is ValidationStatus.PASSED
 
 
+def test_provider_edit_updates_existing_runtime_not_only_form_fragments():
+    from src.developer_workflow.setup_controller import SetupStepTransaction
+    controller = SetupController(profile_id="managed-profile", store=FakeStore(),
+        runtime_builder=FakeRuntimeBuilder(), runtime_bootstrap=FakeBootstrap(),
+        draft=SetupDraft(runtime=_runtime()))
+    old = controller.draft.runtime
+    controller.apply_step_transaction(SetupStep.PROVIDER, SetupStepTransaction(runtime_fields={
+        "provider_host": "github.com", "provider_api_url": "https://api.github.com",
+        "git_author_name": "New Author", "git_author_email": "new@example.test", "provider": "github",
+    }), expected_revision=controller.revision)
+    current = controller.draft.runtime
+    assert current.provider_host == "github.com"
+    assert current.provider_api_url == "https://api.github.com"
+    assert current.git_author_name == "New Author"
+    assert current.ones_team_id == old.ones_team_id
+
+
 def test_first_codex_materialization_rejects_missing_validated_fragments(
     tmp_path: Path,
 ) -> None:

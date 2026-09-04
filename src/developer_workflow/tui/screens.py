@@ -39,6 +39,7 @@ from textual.widgets import (
 from ..contracts import WorkflowState, WorkflowType
 from .schedule_settings import SchedulePane
 from .controller import (
+    PublicationConfigurationError,
     StaleCandidateError,
     StaleTuiActionError,
     TuiController,
@@ -2412,6 +2413,10 @@ class DashboardScreen(Screen[None]):
                     with TabPane("运行信息", id="settings-runtime"):
                         with VerticalScroll():
                             yield Static(Text(self._settings.display_text()), id="settings", markup=False)
+                            yield Static("PR/MR 发布配置：设置 GitHub/GitLab、API 地址、令牌及提交身份。"
+                                         "TUI 提交和推送使用本机 Git 配置（身份、凭据助手、SSH）；"
+                                         "平台令牌仅用于 PR/MR API。保存后仍须逐项审批。")
+                            yield Button("配置 PR/MR 发布", id="configure-runtime", variant="primary")
         yield Static("", id="notice", markup=False)
 
     def on_mount(self) -> None:
@@ -2825,6 +2830,9 @@ class DashboardScreen(Screen[None]):
                 summary.run_id,
                 action,
             )
+        except PublicationConfigurationError:
+            self._show_action_notice("请先到 Configuration → 运行信息 → 配置 PR/MR 发布，设置平台令牌。")
+            return None
         except Exception:
             self._show_action_notice(_ACTION_FAILED)
             return None

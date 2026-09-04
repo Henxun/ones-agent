@@ -8,7 +8,7 @@ arm64 payload，Intel 使用 x86_64 payload；不执行 npm 的 JavaScript 启�
 
 首版承诺可信仓库、ONES 查询、配置恢复、Codex 分析/修复、隔离 worktree 和
 审核包。用户可主动添加远程 Git 仓库；只读 clone/fetch 可使用下文限定的本机
-Git/SSH 认证环境，但显式导入 Git 凭据及 commit、push、PR、ONES 评论发布均禁用。
+Git/SSH 认证环境。PR/MR 发布须配置平台令牌并逐项人工审批；显式导入 Git 凭据仍未开放。
 单元测试不能替代每台目标 Mac 上的 Keychain、codesign、终端交互和 Codex 登录验收。
 
 ## 启动
@@ -51,11 +51,10 @@ Data Protection Keychain 的 `ThisDeviceOnly` 语义。
 自编译 Codex，不以关闭 Gatekeeper、重签名或跳过校验作为解决办法。安装路径不能
 位于任务仓库内，也不能允许其他用户写入。已有 code-mode companion 同样须验签。
 
-当前 TUI 允许用户主动添加远程 Git 仓库。未配置显式 askpass 时，只读 clone/fetch
-可使用受约束的 `osxkeychain` credential helper；SSH 只读取经过安全校验的
-`~/.ssh/known_hosts` 以及 `id_ed25519`、`id_ecdsa`、`id_rsa`，禁用 SSH config、
-agent 和交互提示。显式导入 Git 凭据尚未启用，commit、push、PR 或 ONES 评论发布
-仍由平台 capability gate 禁用；上述只读认证合同不代表发布能力已启用。
+当前 TUI 允许用户主动添加可信远程 Git 仓库，并按用户授权使用本机 Git 全局/系统配置、
+credential helper、SSH 配置及 agent。仓库 hooks 仍禁用，令牌不写入日志或传给 Codex。
+隔离 Git 模式仍用于未显式选择本机配置的其它入口；commit、push、PR/MR 接入现有人工审批流程。
+需另行验证目标 Mac 的推送认证，不把只读 clone/fetch 成功当作推送权限证明。
 
 ## 运行时安全边界
 
@@ -74,7 +73,7 @@ direct-network 隔离保证。worktree 隔离、`shell=False`、超时和输出�
 - 创建工作区，添加可信的本地或远程仓库，查询缺陷并浏览 Configuration 各 tab，
   中文和滚动正常；若需验证私有远程连接，必须在目标 Mac 上另行实测。
 - 本机已登录 Codex 的情况下，启动一次只读分析，确认原生缓存、签名检查和退出清理成功。
-- 确认发布操作在 UI 中明确禁用，且不会执行 commit、push、PR 或 ONES 评论。
+- 确认审批前不会执行 commit、push、PR 或 ONES 评论；配置平台并批准测试任务后验证 Draft PR/MR。
 - 在 Apple Silicon / Intel 各自执行平台测试：
 
 ```sh
