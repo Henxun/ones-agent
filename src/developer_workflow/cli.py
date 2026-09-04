@@ -705,7 +705,6 @@ def build_production_defect_list_client(
 def build_production_tui_host(template_path: Path) -> tuple[object, object]:
     """Build only the private setup host; no workflow runtime is opened here."""
 
-    from .credential_store import create_credential_store
     from .codex_runner import CodexRunner, resolve_codex_command
     from .config import (
         BUILTIN_WORKSPACE_PROFILE,
@@ -713,6 +712,8 @@ def build_production_tui_host(template_path: Path) -> tuple[object, object]:
         PublishingProvider,
     )
     from .contracts import RepositoryMapping
+    from .credential_store import create_credential_store
+    from .platform_support import default_host_paths
     from .runtime_bootstrap import (
         RuntimeAdapterBundle,
         RuntimeBootstrapper as WorkflowRuntimeBootstrapper,
@@ -766,7 +767,14 @@ def build_production_tui_host(template_path: Path) -> tuple[object, object]:
             )
         ),
     )
-    validation = ValidationBootstrapper.production()
+    # Resolve every host-specific dependency through one fail-closed boundary.
+    # This keeps Windows behavior unchanged while ensuring macOS never falls
+    # back to a Windows credential backend or an implicit LOCALAPPDATA path.
+    host_paths = default_host_paths()
+    credentials = create_credential_store(paths=host_paths)
+    validation = ValidationBootstrapper.production(
+        codex_cache_root=host_paths.cache_root,
+    )
     preparer = validation.codex_runtime_preparer
     class _MvpPullRequestClient:
         """Keep MVP analysis/repair local; publishing remains explicitly unavailable."""
@@ -829,7 +837,7 @@ def build_production_tui_host(template_path: Path) -> tuple[object, object]:
         codex_runtime_preparer=preparer,
         sandbox_profile_validator=validate_mvp_sandbox_profile,
     )
-    store = SetupStore(create_credential_store())
+    store = SetupStore(credentials, config_path=host_paths.config_path)
     runtime_builder.workflow_saver = lambda active, workflow: (
         store.replace_active_workflow("default", active.generation, workflow)
     )

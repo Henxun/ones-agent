@@ -1426,6 +1426,7 @@ def test_preparer_rejects_source_identity_change_and_cleans_owned_temps(
     assert not tuple(path for path in root.iterdir() if len(path.name) == 64)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows cache adapter contract")
 def test_cache_adapter_inspects_locked_target_and_closes_handle(
     tmp_path: Path,
 ) -> None:
@@ -1836,6 +1837,7 @@ def test_real_localappdata_ancestor_chain_is_safe_without_staging() -> None:
     assert local_app_data.is_dir()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows cache ancestor contract")
 def test_cache_ancestor_chain_rejects_reparse_point(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1859,6 +1861,7 @@ def test_cache_ancestor_chain_rejects_reparse_point(
         adapter.validate_cache_ancestor_chain(root)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows cache ancestor contract")
 def test_cache_ancestor_chain_rejects_identity_race(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1907,6 +1910,7 @@ def test_zero_length_destination_write_fails_closed() -> None:
         codex_runtime_module._write_all(StalledWriter(), b"payload")
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows execution verifier contract")
 def test_fixed_execution_verifier_uses_fresh_os_adapters_not_lease_callbacks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2020,7 +2024,10 @@ def test_fixed_execution_verifier_uses_fresh_os_adapters_not_lease_callbacks(
         _runtime_adapter=FixedRuntime(poison=True),  # type: ignore[arg-type]
     )
 
-    codex_runtime_module.verify_locked_private_codex_for_execution(lease)
+    codex_runtime_module.verify_locked_private_codex_for_execution(
+        lease,
+        cache_root=lease._cache_root,
+    )
 
 
 def _install_fake_smoke_process(

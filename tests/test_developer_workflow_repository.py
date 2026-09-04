@@ -4,7 +4,9 @@ import os
 import hashlib
 import io
 import json
+import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -213,6 +215,10 @@ def test_ambient_git_redirection_variables_cannot_escape_target_repository(
     assert isolated["GCM_INTERACTIVE"] == "Never"
     assert "SSH_AUTH_SOCK" not in isolated and "SSH_ASKPASS" not in isolated
     assert "GIT_ASKPASS" not in isolated
+    ssh_command = shlex.split(isolated["GIT_SSH_COMMAND"])
+    assert ssh_command[:3] == ["ssh", "-F", "none"]
+    assert "-oProxyCommand=none" in ssh_command
+    assert "-oStrictHostKeyChecking=yes" in ssh_command
     for key in poisoned:
         monkeypatch.delenv(key)
     assert _git("rev-parse", "HEAD", cwd=prepared.path) == prepared.head_commit
@@ -334,6 +340,59 @@ def test_readonly_nofollow_open_rejects_parent_link_escape(tmp_path: Path) -> No
     with pytest.raises(RepositoryBoundaryError, match="outside worktree"):
         descriptor = _open_readonly_nofollow(
             linked_parent / "secret.txt", worktree=worktree
+        )
+        os.close(descriptor)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires Darwin F_GETPATH")
+def test_darwin_descriptor_path_is_resolved_from_open_handle(tmp_path: Path) -> None:
+    from src.developer_workflow.repository import _path_from_open_descriptor
+
+    target = tmp_path / "opened.txt"
+    target.write_text("opened", encoding="utf-8")
+    descriptor = os.open(target, os.O_RDONLY)
+    try:
+        actual = _path_from_open_descriptor(descriptor)
+    finally:
+        os.close(descriptor)
+
+    assert actual == target.resolve(strict=True)
+
+
+def test_unsupported_posix_descriptor_resolution_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.developer_workflow.repository as repository_module
+
+    target = tmp_path / "opened.txt"
+    target.write_text("opened", encoding="utf-8")
+    descriptor = os.open(target, os.O_RDONLY)
+    monkeypatch.setattr(repository_module.sys, "platform", "unsupported-posix")
+    try:
+        with pytest.raises(RepositoryBoundaryError, match="could not be verified"):
+            repository_module._path_from_open_descriptor(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def test_readonly_open_uses_handle_bound_path_for_containment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.developer_workflow.repository as repository_module
+
+    worktree = tmp_path / "worktree"
+    outside = tmp_path / "outside"
+    worktree.mkdir()
+    outside.mkdir()
+    target = worktree / "changed.txt"
+    target.write_text("changed", encoding="utf-8")
+    monkeypatch.setattr(
+        repository_module, "_path_from_open_descriptor", lambda _descriptor: outside
+    )
+
+    with pytest.raises(RepositoryBoundaryError, match="outside worktree"):
+        descriptor = repository_module._open_readonly_nofollow(
+            target, worktree=worktree
         )
         os.close(descriptor)
 

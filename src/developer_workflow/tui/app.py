@@ -77,6 +77,7 @@ class DeveloperWorkflowTuiApp(App[None]):
         setup_import: SetupImportContext | None = None,
         provider_type: str = "configured",
         sandbox_configured: bool = True,
+        publishing_enabled: bool = True,
         poll_interval: float = 2.0,
         close_timeout: float = 5.0,
     ) -> None:
@@ -89,6 +90,8 @@ class DeveloperWorkflowTuiApp(App[None]):
             or close_timeout <= 0
         ):
             raise ValueError("TUI timing configuration is invalid")
+        if type(publishing_enabled) is not bool:
+            raise ValueError("publishing capability is invalid")
         super().__init__()
         if controller is None and (
             runtime_bootstrapper is None
@@ -115,6 +118,7 @@ class DeveloperWorkflowTuiApp(App[None]):
         self.poll_interval = float(poll_interval)
         self._close_timeout = float(close_timeout)
         self._max_concurrency = max_concurrency
+        self._publishing_enabled = publishing_enabled
         self.settings = SettingsView(
             max_concurrency=max_concurrency,
             provider_type=provider_type,
@@ -192,7 +196,10 @@ class DeveloperWorkflowTuiApp(App[None]):
 
     def _build_runtime_session(self, handle: object) -> TuiRuntimeSession:
         return TuiRuntimeSession.from_handle(
-            handle, self._max_concurrency, self._event_sink  # type: ignore[arg-type]
+            handle,
+            self._max_concurrency,
+            self._event_sink,
+            publishing_enabled=self._publishing_enabled,  # type: ignore[arg-type]
         )
 
     def _new_setup_controller(self) -> object:
@@ -407,6 +414,7 @@ class DeveloperWorkflowTuiApp(App[None]):
             session.controller,
             session.supervisor,
             self.settings,
+            publishing_enabled=self._publishing_enabled,
         )
 
     def _bind_runtime_session(self, session: TuiRuntimeSession) -> None:

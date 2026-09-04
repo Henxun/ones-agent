@@ -23,7 +23,6 @@ dependencies = [
     "aiosmtplib>=5.1.0",
     "jsonschema>=4.0",
     "textual>=0.89,<2",
-    "pyobjc-framework-Security>=10,<12; sys_platform == 'darwin'",
 ]
 
 [dependency-groups]

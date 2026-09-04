@@ -27,7 +27,6 @@ from urllib.parse import unquote, urlsplit
 from jsonschema import Draft202012Validator
 
 from .codex_runtime import (
-    CODEX_EXECUTABLE_NAME,
     CodexRuntimePreparer,
     LockedPrivateCodex,
     NativeCodexIdentity,
@@ -92,6 +91,10 @@ _COMMAND_ATTESTATION_NONCE = object()
 _COMMAND_ATTESTATION_SECRET = secrets.token_bytes(32)
 
 
+def _is_native_codex_name(name: str) -> bool:
+    return name == "codex" or name.casefold() == "codex.exe"
+
+
 def _command_attestation_mac(
     prefix: tuple[str, ...],
     path: Path,
@@ -139,7 +142,7 @@ class CodexCommand:
             type(runtime) is not _PreparedCodexRuntime
             or not runtime._is_attested()
             or runtime.path != runtime.path.resolve(strict=True)
-            or runtime.path.name.casefold() != CODEX_EXECUTABLE_NAME
+            or not _is_native_codex_name(runtime.path.name)
         ):
             raise TypeError("Codex runtime attestation is invalid")
         prefix = (str(runtime.path),)
@@ -185,7 +188,7 @@ class CodexCommand:
                 or self.prefix != (str(self._path),)
                 or self._path.resolve(strict=True) != self._path
                 or self._cache_root.resolve(strict=True) != self._cache_root
-                or self._path.name.casefold() != CODEX_EXECUTABLE_NAME
+                or not _is_native_codex_name(self._path.name)
                 or self._path.parent.name != self._sha256
                 or self._path.parent.parent != self._cache_root
             ):
@@ -1065,12 +1068,15 @@ def _safe_environment(
         safe[key] = value
     locations = {
         "HOME": isolation_root / "home",
-        "USERPROFILE": isolation_root / "home",
-        "APPDATA": isolation_root / "appdata",
-        "LOCALAPPDATA": isolation_root / "localappdata",
         "XDG_CONFIG_HOME": isolation_root / "xdg-config",
         "XDG_CACHE_HOME": isolation_root / "xdg-cache",
     }
+    if os.name == "nt":
+        locations.update({
+            "USERPROFILE": isolation_root / "home",
+            "APPDATA": isolation_root / "appdata",
+            "LOCALAPPDATA": isolation_root / "localappdata",
+        })
     for path in set(locations.values()):
         path.mkdir(exist_ok=True)
         if _is_reparse_or_link(path) or not path.is_dir():
@@ -1083,15 +1089,15 @@ def _safe_environment(
         "GIT_CONFIG_SYSTEM": str(empty_git_config),
         "GIT_TERMINAL_PROMPT": "0",
         "GCM_INTERACTIVE": "Never",
+    })
+    if os.name == "nt":
         # Windows PowerShell otherwise derives this cache location from an
         # incomplete/non-standard profile environment and can create
         # ``Microsoft/Windows/PowerShell/ModuleAnalysisCache`` in the current
-        # repository.  Keep the interpreter's own cache in the per-run
-        # isolation directory so a read-only analysis cannot dirty a worktree.
-        "PSModuleAnalysisCachePath": str(
+        # repository. Keep the interpreter cache in the per-run directory.
+        safe["PSModuleAnalysisCachePath"] = str(
             isolation_root / "powershell-module-analysis-cache"
-        ),
-    })
+        )
     if codex_home is not None:
         safe["CODEX_HOME"] = str(codex_home)
     return safe, tuple(removed_values)
@@ -2511,6 +2517,7 @@ class CodexRunner:
             try:
                 verify_locked_private_codex_for_execution(
                     resolved_command._lease,
+                    cache_root=resolved_command._cache_root,
                 )
             except BaseException as error:
                 if _is_priority_failure(error) or not isinstance(error, OSError):

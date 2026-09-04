@@ -10,9 +10,11 @@ from ctypes import wintypes
 
 import pytest
 
+import src.developer_workflow.setup_store as setup_store_module
 from src.developer_workflow.config import DeveloperWorkflowConfig, PublishingConfig
 from src.developer_workflow.contracts import RepositoryMapping
 from src.developer_workflow.credential_store import CredentialStoreError
+from src.developer_workflow.platform_support import HostPaths
 from src.developer_workflow.private_paths import PrivatePathError, prepare_private_directory
 from src.developer_workflow.setup_models import (
     ActiveSetup,
@@ -277,13 +279,34 @@ def store(tmp_path: Path) -> tuple[SetupStore, FakeCredentials, Path]:
     return SetupStore(credentials, config_path=path), credentials, path
 
 
-def test_default_path_uses_localappdata(
+def test_default_path_uses_platform_support_source_of_truth(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    expected = tmp_path / "platform" / "ones-dev" / "config.json"
+    monkeypatch.setattr(
+        setup_store_module,
+        "default_host_paths",
+        lambda: HostPaths(
+            config_path=expected,
+            cache_root=tmp_path / "cache",
+            credential_lock_root=tmp_path / "locks",
+        ),
+    )
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
     configured = SetupStore(FakeCredentials())
 
-    assert configured.config_path == tmp_path / "ones-dev" / "config.json"
+    assert configured.config_path == expected
+
+
+def test_explicit_config_path_does_not_depend_on_localappdata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    explicit = tmp_path / "application-support" / "ones-dev" / "config.json"
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+
+    configured = SetupStore(FakeCredentials(), config_path=explicit)
+
+    assert configured.config_path == explicit
 
 
 def test_prepare_private_directory_is_private_and_rejects_symlink(

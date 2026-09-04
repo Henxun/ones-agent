@@ -12,10 +12,13 @@ import re
 import sys
 from collections.abc import Callable, Iterator
 from threading import RLock
-from typing import ContextManager, Protocol, TypeVar, cast, runtime_checkable
+from typing import TYPE_CHECKING, ContextManager, Protocol, TypeVar, cast, runtime_checkable
 import unicodedata
 
 from .setup_models import RuntimeSecrets, SecretKind
+
+if TYPE_CHECKING:
+    from .platform_support import HostPaths
 
 
 CRED_TYPE_GENERIC = 1
@@ -196,13 +199,27 @@ def _validated_generation_write(
     return entries, profile, canonical_generation, prefix
 
 
-def create_credential_store() -> CredentialStore:
-    """Select the native OS vault; never fall back to plaintext storage."""
-    if sys.platform == "darwin":
+def create_credential_store(
+    *, platform_name: str | None = None, paths: HostPaths | None = None
+) -> CredentialStore:
+    """选择当前主机的原生凭据库，绝不回退到明文存储。
+
+    macOS 使用 ``paths`` 中显式注入的 owner-only 锁目录；生产调用省略该
+    参数时由平台路径真源解析系统账户 home。平台不受支持时 fail-closed。
+    """
+
+    platform = platform_name or sys.platform
+    if platform == "darwin":
         from .macos_credentials import MacOSCredentialStore
 
-        return MacOSCredentialStore()
-    return WindowsCredentialStore()
+        if paths is None:
+            return _safe_backend_call(MacOSCredentialStore)
+        return _safe_backend_call(
+            lambda: MacOSCredentialStore(lock_root=paths.credential_lock_root)
+        )
+    if platform == "win32":
+        return _safe_backend_call(WindowsCredentialStore)
+    raise _fail()
 
 
 class WindowsCredentialStore:

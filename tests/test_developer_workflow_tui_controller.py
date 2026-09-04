@@ -194,6 +194,27 @@ def test_load_defect_filter_options_reads_project_scoped_ones_metadata() -> None
     ]
 
 
+def test_disabled_publishing_rejects_prepare_and_resume_without_side_effects() -> None:
+    orchestrator = Orchestrator()
+    orchestrator.run = orchestrator.run.validated_update(
+        state=WorkflowState.PUBLISHING,
+    )
+    controller = TuiController(
+        orchestrator,  # type: ignore[arg-type]
+        Index(),  # type: ignore[arg-type]
+        publishing_enabled=False,
+    )
+    try:
+        with pytest.raises(TuiControllerError, match="workflow action is unavailable"):
+            controller.prepare_action(orchestrator.run.run_id, "resume-publication")
+        with pytest.raises(TuiControllerError, match="workflow action is unavailable"):
+            controller.resume_publication(object())  # type: ignore[arg-type]
+    finally:
+        controller.close()
+
+    assert orchestrator.calls == []
+
+
 def test_load_defect_filter_options_keeps_partial_ones_metadata() -> None:
     class Gateway:
         async def list_iterations(self, project: str):

@@ -503,6 +503,9 @@ def _socket_network_denial_probe_command(port: int) -> list[str]:
 
 _SandboxDirectoryIdentity = tuple[int, int, int, int]
 
+_POSIX_SANDBOX_CLEANUP_MAX_DEPTH = 64
+_POSIX_SANDBOX_CLEANUP_MAX_ENTRIES = 10_000
+
 
 class _SandboxByHandleFileInformation(ctypes.Structure):
     _fields_ = [
@@ -593,14 +596,89 @@ class _SandboxDirectoryLease:
             raise OSError("sandbox directory lease cannot delete")
         self.validate_path()
         if self.windows_handle is None:
-            # POSIX has no portable delete-by-open-directory-handle primitive.
-            # Retaining the still-identified directory is safer than a pathname race.
+            assert self.descriptor is not None
+            budget = [_POSIX_SANDBOX_CLEANUP_MAX_ENTRIES]
+            _posix_delete_directory_children(self.descriptor, depth=0, budget=budget)
+            # POSIX cannot portably delete the root through its open descriptor.
+            # Retaining the verified empty root avoids reopening a swappable path.
+            self.validate_path()
+            if os.listdir(self.descriptor):
+                raise OSError("sandbox cleanup root is not empty")
             return False
         _windows_delete_directory_children(self.path)
         self.validate_path()
         _windows_mark_handle_for_delete(self.windows_handle)
         self.close()
         return True
+
+
+def _posix_cleanup_entry_identity(
+    name: str, *, parent_descriptor: int
+) -> tuple[int, int, int]:
+    metadata = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    return metadata.st_dev, metadata.st_ino, metadata.st_mode
+
+
+def _posix_delete_cleanup_entry(
+    name: str, *, parent_descriptor: int, depth: int, budget: list[int]
+) -> None:
+    if depth > _POSIX_SANDBOX_CLEANUP_MAX_DEPTH:
+        raise OSError("sandbox cleanup depth limit exceeded")
+    if budget[0] <= 0:
+        raise OSError("sandbox cleanup entry limit exceeded")
+    budget[0] -= 1
+    identity = _posix_cleanup_entry_identity(name, parent_descriptor=parent_descriptor)
+    if stat.S_ISDIR(identity[2]):
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        child_descriptor = os.open(name, flags, dir_fd=parent_descriptor)
+        try:
+            opened = os.fstat(child_descriptor)
+            opened_identity = (opened.st_dev, opened.st_ino, opened.st_mode)
+            if opened_identity != identity or not stat.S_ISDIR(opened.st_mode):
+                raise OSError("sandbox cleanup entry identity changed")
+            _posix_delete_directory_children(
+                child_descriptor, depth=depth, budget=budget
+            )
+            if os.listdir(child_descriptor):
+                raise OSError("sandbox cleanup directory is not empty")
+            if (
+                _posix_cleanup_entry_identity(
+                    name, parent_descriptor=parent_descriptor
+                )
+                != identity
+            ):
+                raise OSError("sandbox cleanup entry identity changed")
+            os.rmdir(name, dir_fd=parent_descriptor)
+        finally:
+            os.close(child_descriptor)
+        return
+
+    # Descriptor-relative unlink removes links themselves without following them.
+    if (
+        _posix_cleanup_entry_identity(name, parent_descriptor=parent_descriptor)
+        != identity
+    ):
+        raise OSError("sandbox cleanup entry identity changed")
+    os.unlink(name, dir_fd=parent_descriptor)
+
+
+def _posix_delete_directory_children(
+    descriptor: int, *, depth: int, budget: list[int]
+) -> None:
+    names = tuple(os.listdir(descriptor))
+    if len(names) > budget[0]:
+        raise OSError("sandbox cleanup entry limit exceeded")
+    for name in names:
+        _posix_delete_cleanup_entry(
+            name,
+            parent_descriptor=descriptor,
+            depth=depth + 1,
+            budget=budget,
+        )
 
 
 def _open_sandbox_directory_nofollow(

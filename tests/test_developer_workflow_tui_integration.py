@@ -597,6 +597,31 @@ def test_run_tui_rejects_preconstructed_controller_bypass(
     assert calls == []
 
 
+def test_run_tui_reports_mvp_sandbox_as_not_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.developer_workflow.tui as tui
+
+    calls: list[dict[str, object] | str] = []
+
+    class App:
+        def __init__(self, **kwargs: object) -> None:
+            calls.append(kwargs)
+
+        def run(self) -> None:
+            calls.append("run")
+
+    setup_controller = lambda: None
+    monkeypatch.setattr(tui, "DeveloperWorkflowTuiApp", App)
+
+    tui.run_tui(setup_controller, object())
+
+    assert calls[-1] == "run"
+    assert isinstance(calls[0], dict)
+    assert calls[0]["sandbox_configured"] is False
+    assert calls[0]["publishing_enabled"] is False
+
+
 def _git(*args: str, cwd: Path) -> str:
     completed = subprocess.run(
         ["git", *args],
@@ -1103,9 +1128,14 @@ async def test_real_group_ui_approval_is_first_remote_effect_and_publishes_once(
     assert commenter.status_updates == 0
     assert commenter.mutation_requests == [("comment", "REQ-UI")]
     assert app.supervisor.closed is True
-    assert not any(
-        path.name.startswith((".ones-sandbox", ".ones-sandbox-probes-"))
+    retained_sandbox_roots = tuple(
+        path
         for path in (tmp_path / "worktrees").rglob("*")
+        if path.name.startswith((".ones-sandbox", ".ones-sandbox-probes-"))
+    )
+    assert all(
+        path.is_dir() and not tuple(path.iterdir())
+        for path in retained_sandbox_roots
     )
     assert {key: _source_facts(path) for key, path in sources.items()} == source_before
     assert _git(

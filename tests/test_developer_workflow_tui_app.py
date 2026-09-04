@@ -251,6 +251,61 @@ async def test_workspace_mode_exposes_persisted_tasks_and_reopens_detail() -> No
 
 
 @pytest.mark.asyncio
+async def test_mvp_publishing_capability_is_visible_but_disabled() -> None:
+    controller = FakeController()
+    app = DeveloperWorkflowTuiApp(
+        controller,  # type: ignore[arg-type]
+        3,
+        publishing_enabled=False,
+    )
+
+    async with app.run_test(size=(120, 32)) as pilot:
+        screen = app.screen
+        assert isinstance(screen, DashboardScreen)
+        approve = screen.query_one("#action-approve", Button)
+        assert approve.display
+        assert approve.disabled
+        assert approve.label.plain == "MVP 未启用 PR 发布"
+
+        await screen.action_approve()
+
+        assert "未启用 commit、push 或 PR" in _plain(
+            screen.query_one("#notice")
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "resume_state"),
+    [
+        (WorkflowState.PARTIAL_SUCCESS, None),
+        (WorkflowState.PUBLISHING, None),
+        (WorkflowState.BLOCKED, WorkflowState.PUBLISHING),
+    ],
+)
+async def test_mvp_publication_resume_is_rejected_before_controller_call(
+    state: WorkflowState,
+    resume_state: WorkflowState | None,
+) -> None:
+    controller = ActionController(state, resume_state=resume_state)
+    app = DeveloperWorkflowTuiApp(
+        controller,  # type: ignore[arg-type]
+        3,
+        publishing_enabled=False,
+    )
+
+    async with app.run_test(size=(120, 32)) as pilot:
+        await pilot.app.screen.action_resume()
+
+        assert pilot.app.screen.id == "dashboard-screen"
+        assert controller.action_calls == []
+        assert controller.remote_effects == []
+        assert "未启用 commit、push 或 PR" in _plain(
+            pilot.app.screen.query_one("#notice")
+        )
+
+
+@pytest.mark.asyncio
 async def test_task_delete_requires_confirmation_and_refreshes_list() -> None:
     class WorkspaceController(FakeController):
         def list_workspaces(self):

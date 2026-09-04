@@ -974,6 +974,35 @@ def test_empty_cold_catalog_does_not_prepare_codex_before_confirmation(
     assert preparer.calls == 0
 
 
+def test_production_runtime_uses_explicit_host_codex_cache_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.developer_workflow.setup_validation as validation_module
+
+    cache_root = tmp_path / "host-cache" / "codex-runtime"
+    captured: list[Path] = []
+    class Preparer:
+        def prepare_verified(self) -> object:
+            return object()
+
+    preparer = Preparer()
+
+    def build_preparer(*, cache_root: Path) -> object:
+        captured.append(cache_root)
+        return preparer
+
+    monkeypatch.setattr(validation_module, "CodexRuntimePreparer", build_preparer)
+    runtime = RuntimeBootstrapper.production(
+        probe_parent=tmp_path,
+        codex_cache_root=cache_root,
+    )
+
+    assert captured == [cache_root]
+    assert runtime.codex_runtime_preparer is preparer
+    assert runtime.catalog.codex_runtime_preparer is preparer
+
+
 @pytest.mark.parametrize(
     "document",
     ("", "# ordinary Codex settings only\nmodel = 'gpt-test'\n", "[permissions]\n"),
@@ -1413,8 +1442,12 @@ def test_read_only_repository_inspector_preserves_source_index_and_status(tmp_pa
     (source / "tracked.txt").write_text("tracked\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(source), "add", "tracked.txt"], check=True)
     subprocess.run(
-        ["git", "-C", str(source), "-c", "user.name=Test", "-c",
-         "user.email=test@example.invalid", "commit", "-qm", "initial"], check=True,
+        [
+            "git", "-C", str(source), "-c", "core.hooksPath=",
+            "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+            "commit", "-qm", "test(repo): initialize fixture",
+        ],
+        check=True,
     )
     (source / "untracked.txt").write_text("untracked\n", encoding="utf-8")
     status_before = subprocess.run(
@@ -1467,6 +1500,23 @@ def test_repository_inspector_sanitizes_missing_git_executable(
     assert raised.value.__context__ is None
     assert canary not in str(raised.value)
     assert canary not in repr(raised.value)
+
+
+def test_repository_inspector_disables_ambient_ssh_configuration(
+    tmp_path: Path,
+) -> None:
+    inspector = ReadOnlyRepositoryInspector()
+    hooks = tmp_path / "hooks"
+    expected = (
+        "ssh -F none -oBatchMode=yes -oIdentitiesOnly=yes -oProxyCommand=none "
+        "-oStrictHostKeyChecking=yes -oUpdateHostKeys=no"
+    )
+
+    environment = inspector._environment(tmp_path, hooks)
+    configuration = inspector._git_configuration(hooks)
+
+    assert environment["GIT_SSH_COMMAND"] == expected
+    assert f"core.sshCommand={expected}" in configuration
 
 
 def test_repository_inspector_sanitizes_real_wrapped_missing_git_executable(
@@ -1704,8 +1754,12 @@ def test_repository_inspector_never_executes_repo_local_programs(tmp_path: Path)
     attributes.write_text("*.txt diff=hostile\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(source), "add", "."], check=True)
     subprocess.run(
-        ["git", "-C", str(source), "-c", "user.name=Test", "-c",
-         "user.email=test@example.invalid", "commit", "-qm", "initial"], check=True,
+        [
+            "git", "-C", str(source), "-c", "core.hooksPath=",
+            "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+            "commit", "-qm", "test(repo): initialize fixture",
+        ],
+        check=True,
     )
     tracked.write_text("after\n", encoding="utf-8")
 
@@ -1766,8 +1820,10 @@ def test_repository_snapshot_never_runs_content_filters(
     subprocess.run(["git", "-C", str(source), "add", "."], check=True)
     subprocess.run(
         [
-            "git", "-C", str(source), "-c", "user.name=Test",
-            "-c", "user.email=test@example.invalid", "commit", "-qm", "initial",
+            "git", "-C", str(source), "-c", "core.hooksPath=",
+            "-c", "user.name=Test",
+            "-c", "user.email=test@example.invalid", "commit", "-qm",
+            "test(repo): initialize fixture",
         ],
         check=True,
     )

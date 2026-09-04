@@ -274,13 +274,17 @@ class TuiController:
         *,
         max_candidate_sessions: int = 8,
         workflow_saver: Callable[[DeveloperWorkflowConfig], None] | None = None,
+        publishing_enabled: bool = True,
     ) -> None:
         if type(max_candidate_sessions) is not int or max_candidate_sessions <= 0:
             raise TuiControllerError("candidate session capacity is invalid")
+        if type(publishing_enabled) is not bool:
+            raise TuiControllerError("publishing capability is invalid")
         self._orchestrator = orchestrator
         self._run_index = run_index
         self._max_candidate_sessions = max_candidate_sessions
         self._workflow_saver = workflow_saver
+        self._publishing_enabled = publishing_enabled
         self._candidate_sessions: OrderedDict[str, _CandidateSession] = OrderedDict()
         self._requirement_sessions: OrderedDict[str, _RequirementSession] = OrderedDict()
         self._candidate_lock = Lock()
@@ -937,6 +941,8 @@ class TuiController:
         run_id: str,
         action: Literal["approve", "revise", "cancel", "resume-publication"],
     ) -> DangerousActionRequest:
+        if action in {"approve", "resume-publication"} and not self._publishing_enabled:
+            raise TuiControllerError(_ACTION_UNAVAILABLE)
         try:
             request = DangerousActionRequest.from_run(
                 self._orchestrator.show(run_id, read_only=True), action=action
@@ -1012,6 +1018,8 @@ class TuiController:
             raise ApprovalMembersError("ONES 成员接口调用失败，请检查连接与账号权限后重新打开审批。") from None
 
     def approve(self, request: DangerousActionRequest, actor: str) -> RunDetail:
+        if not self._publishing_enabled:
+            raise TuiControllerError(_ACTION_UNAVAILABLE)
         self._assert_request(request, "approve")
         if actor not in {member.id for member in request.approvers}:
             raise TuiControllerError("请从 ONES 成员列表选择审批人")
@@ -1049,6 +1057,8 @@ class TuiController:
         )
 
     def resume_publication(self, request: DangerousActionRequest) -> RunDetail:
+        if not self._publishing_enabled:
+            raise TuiControllerError(_ACTION_UNAVAILABLE)
         self._assert_request(request, "resume-publication")
         return self._dangerous(
             self._orchestrator.resume,

@@ -10,18 +10,30 @@
 
 使用与非交互 CLI 相同的生产装配启动全屏 Textual 控制台：
 
-```powershell
+```console
 uv run ones-dev tui --config docs/examples/ones-dev.config.json
 ```
 
-首次启动不要求预先安装 Codex permission profile。Profile 页面没有可用配置时，
-选择 **Create safe workspace profile**，阅读固定权限摘要并显式点击 **Confirm**。
-ones-dev 会在运行中验证工作区内写入、工作区外拒绝和环境隔离；Windows 还会确认
-已验证私有原生 Codex 的完整 argv 中恰好一次启用固定
-`--sandbox-state-disable-network` 控制。Windows 本机 loopback 可能仍可访问，这不代表
-允许外部 direct network；验收不会访问 LAN 或公网。非 Windows 继续执行本地 socket
-拒绝探测。全部检查通过后才选择固定的 `ones-dev-workspace` 并允许继续；取消或验证
-失败不会保存配置。
+Windows 和 macOS 均需要 Python 3.11+；AI 分析或修复还需要已安装、已登录的本机
+`codex` CLI。Windows 的非敏感配置位于 `%LOCALAPPDATA%\ones-dev`；macOS 使用
+`~/Library/Application Support/ones-dev`，Codex 缓存使用
+`~/Library/Caches/ones-dev/codex-runtime`。macOS 的凭据由当前用户默认
+Keychain/search list 保管，不写入公共配置 JSON；当前 Python console-script 宿主不声明
+Data Protection Keychain 的 `ThisDeviceOnly` 语义。
+
+> macOS 当前为 Preview：支持本地仓库以及用户主动添加的可信远程 Git 仓库，并以
+> trust 门禁保护 Codex 分析/修复。只读 clone/fetch 可使用受约束的本机 Git/SSH
+> 认证环境；显式 Git 凭据导入和所有发布动作仍禁用。Codex 以
+> `danger-full-access` 运行。
+> 详细的安装、数据路径、fail-closed 语义与实机验收以
+> [macOS TUI 指南](ones_dev_tui_macos.md) 为准。
+
+以下 permission profile 和 sandbox 流程是保留的完整能力模型，不代表当前生产 TUI
+MVP 已启用。当前 Windows 与 macOS TUI 都以 `danger-full-access` 启动 Codex，Settings
+明确显示 OS sandbox 未配置，也不会在首次启动时创建或选择 permission profile；因此
+只应添加和处理可信仓库。后续启用完整能力时，必须重新验证工作区内写入、工作区外拒绝、
+环境隔离与 direct-network 控制，全部检查通过后才能允许选择固定 profile；取消或验证
+失败不得保存配置。
 
 该操作不会修改 `~/.codex/config.toml`、其文件 identity、mtime 或 ACL，也不会修改
 npm/NVM 中的原生 Codex、Node、JavaScript、`.cmd` 或 `.ps1`。Windows 首次确认会
@@ -31,15 +43,22 @@ npm/NVM 中的原生 Codex、Node、JavaScript、`.cmd` 或 `.ps1`。Windows 首
 
 `--config` 指向的示例文件只用于导入，不会被改写；其中的标识符和地址仍是占位符。
 首次配置或已保存配置不完整时，TUI 会进入受限配置模式，而不是要求用户先在终端中
-准备完整配置。配置过程依次包含七个步骤：托管 profile、ONES、仓库与仓库组、Git
-provider、Codex、私有目录和 Review。每一步只执行对应的只读连接或能力检查；Review
+准备完整配置。当前生产 MVP 仅开放 ONES 与 Review 两步，仓库和运行目录按启动工作区
+安全装配；托管 profile、仓库组、Git provider 与其它高级配置步骤暂不暴露。每一步只
+执行对应的只读连接或能力检查；Review
 确认并再次显式确认“保存并激活”之前，不会构建生产 Orchestrator，也不会创建 run、
 mirror、worktree、commit、push、PR 或写入 ONES。
 
-ONES、provider、Codex 和 Git 传输凭据保存在 Windows Credential Manager；版本化配置
-文件只保存非敏感策略。TUI 可选择运行时固定的 `ones-dev-workspace` 内置 profile，
-也可选择管理员预先安装并被探测通过的 managed profile；两者来源会分别保存，不能
-按名称互相推断。全部检查通过后无需重启即可进入 Dashboard。Dashboard 的 `Configure runtime`
+ONES、provider、Codex 和 Git 传输凭据在 Windows 保存到 Credential Manager；
+macOS Preview 只对首版实际使用的 ONES 凭据提供当前用户默认
+Keychain/search list 存储。版本化配置
+文件只保存非敏感策略。macOS 用户可主动添加远程 Git 仓库；未配置显式 askpass 时，
+只读 clone/fetch 可使用受约束的 `osxkeychain` credential helper，SSH 只读取安全
+校验后的 `~/.ssh/known_hosts` 与 `id_ed25519`、`id_ecdsa`、`id_rsa`，并禁用 SSH
+config、agent 和交互。该路径不会导入 Git 凭据，也不会绕过 macOS 的发布能力门禁。
+完整 sandbox 能力后续启用时，Windows TUI 才可选择运行时固定的
+`ones-dev-workspace` 内置 profile 或管理员预先安装并被探测通过的 managed profile；
+两者来源必须分别保存，不能按名称互相推断。全部检查通过后无需重启即可进入 Dashboard。Dashboard 的 `Configure runtime`
 可先关闭现有 runtime，再进入重新配置；取消会恢复之前的稳定 generation。若进程在
 激活中断，下一次启动会显示恢复页面；恢复旧 generation、丢弃未完成 generation 和
 清理孤立凭据均要求二次确认。任何错误、通知、Rich renderable 或 TaskEvent 都只显示
@@ -76,6 +95,9 @@ prompt，避免误用源码树掩盖缺失资源。
 run 的 mutation 始终 FIFO 串行，底层 operation lock 和 version CAS 仍是最终门禁。
 退出不会把后台任务解释为取消；已持久化检查点保留在私有 `run_root`，再次启动后
 只从 `FileRunStore` 恢复。异常退出后可先查看详情，再使用 `r` 从允许的检查点继续。
+
+以下多仓库和发布流程描述完整非交互能力模型，不表示当前 TUI MVP 已开放
+commit、push、PR 或 ONES 评论。TUI MVP 到审核包为止，所有发布入口均禁用。
 
 配置 `source_path` 时，本地 source workspace 始终只读；镜像、修改、测试、commit
 和 push 只发生在隔离的 managed worktree。一个工作项可映射到有向无环的
@@ -245,7 +267,9 @@ TTY 下，`requirement` 可交互确认唯一仓库映射，`defect` 用候选�
 
 `approve` 会在任何远端副作用前重新读取并比较全部证据。下列任一变化都会使旧审批失效：ONES 需求/缺陷关键内容；Wiki version、更新时间或内容哈希；远端基线 commit；worktree `HEAD`；diff 内容/文件集合；测试命令、argv、退出码、outcome、输出摘要或测试快照；风险、未解决事项、review；commit message、PR 标题或 PR 正文。失效后保持零新副作用，需重新验证并形成新审批。
 
-Codex 只拥有隔离 worktree 的受管写权限，无 ONES、Git 远端或 PR 凭据，不能 commit/push/建 PR/评论。Publisher 是审批后唯一允许 commit、push 和创建 PR 的组件；`OnesCommenter` 仅在已确认 PR URL 后评论，并且永不更新 ONES 状态。
+在完整非交互能力模型中，Codex 不持有 ONES、Git 远端或 PR 凭据，不能
+commit/push/建 PR/评论。Publisher 是审批后唯一允许 commit、push 和创建 PR 的
+组件；`OnesCommenter` 仅在已确认 PR URL 后评论，并且永不更新 ONES 状态。
 
 ## 局域网只读 smoke
 

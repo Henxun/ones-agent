@@ -75,6 +75,10 @@ _DOCTOR_CONFIG_DETAIL_KEYS = frozenset(
 )
 _PRODUCTION_CONSTRUCTION = object()
 _TEST_CONSTRUCTION = object()
+_LOCKED_SSH_COMMAND = (
+    "ssh -F none -oBatchMode=yes -oIdentitiesOnly=yes -oProxyCommand=none "
+    "-oStrictHostKeyChecking=yes -oUpdateHostKeys=no"
+)
 _CATEGORIES = Literal[
     "ok",
     "git_unavailable",
@@ -688,8 +692,17 @@ class ManagedProfileCatalog:
     _construction_token: object | None = field(default=None, repr=False)
 
     @classmethod
-    def production(cls, *, probe_parent: Path | None = None) -> ManagedProfileCatalog:
-        preparer = CodexRuntimePreparer()
+    def production(
+        cls,
+        *,
+        probe_parent: Path | None = None,
+        codex_cache_root: Path | None = None,
+    ) -> ManagedProfileCatalog:
+        preparer = (
+            CodexRuntimePreparer()
+            if codex_cache_root is None
+            else CodexRuntimePreparer(cache_root=codex_cache_root)
+        )
         user_home = Path.home()
         return cls(
             codex_doctor=SubprocessDoctorRunner(codex_preparer=preparer),
@@ -757,7 +770,9 @@ class ManagedProfileCatalog:
         available: list[str] = []
         try:
             with tempfile.TemporaryDirectory(prefix="ones-profile-probe-") as raw_root:
-                probe_root = prepare_private_directory(Path(raw_root) / "private")
+                probe_root = prepare_private_directory(
+                    Path(raw_root).resolve(strict=True) / "private"
+                )
                 for name in candidates:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -822,7 +837,9 @@ class ManagedProfileCatalog:
                 prefix="ones-builtin-profile-probe-"
             )
             raw_root = temporary_root.__enter__()
-            probe_root = prepare_private_directory(Path(raw_root) / "private")
+            probe_root = prepare_private_directory(
+                Path(raw_root).resolve(strict=True) / "private"
+            )
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError
@@ -1098,7 +1115,7 @@ class ReadOnlyRepositoryInspector:
                 "GIT_OPTIONAL_LOCKS": "0",
                 "GIT_TERMINAL_PROMPT": "0",
                 "GCM_INTERACTIVE": "Never",
-                "GIT_SSH_COMMAND": "ssh -oBatchMode=yes -oIdentitiesOnly=yes",
+                "GIT_SSH_COMMAND": _LOCKED_SSH_COMMAND,
             }
         )
         return environment
@@ -1109,7 +1126,7 @@ class ReadOnlyRepositoryInspector:
             "-c", f"core.hooksPath={hooks}",
             "-c", "core.fsmonitor=false",
             "-c", "credential.helper=",
-            "-c", "core.sshCommand=ssh -oBatchMode=yes -oIdentitiesOnly=yes",
+            "-c", f"core.sshCommand={_LOCKED_SSH_COMMAND}",
         ]
 
     def _run(
@@ -1247,7 +1264,9 @@ class ReadOnlyRepositoryInspector:
         config_before = self._config_fingerprint(config)
         deadline = time.monotonic() + timeout
         with tempfile.TemporaryDirectory(prefix="ones-repository-probe-") as raw_private:
-            private_root = prepare_private_directory(Path(raw_private) / "private")
+            private_root = prepare_private_directory(
+                Path(raw_private).resolve(strict=True) / "private"
+            )
             hooks = private_root / "empty-hooks"
             hooks.mkdir()
 
@@ -1301,7 +1320,9 @@ class ReadOnlyRepositoryInspector:
         ):
             raise RuntimeError("read-only Git probe failed")
         with tempfile.TemporaryDirectory(prefix="ones-ls-remote-") as raw_private:
-            private_root = prepare_private_directory(Path(raw_private) / "private")
+            private_root = prepare_private_directory(
+                Path(raw_private).resolve(strict=True) / "private"
+            )
             hooks = private_root / "empty-hooks"
             hooks.mkdir()
             argv = ["git", *self._git_configuration(hooks), "ls-remote", "--refs", url]
@@ -1557,10 +1578,14 @@ class RuntimeBootstrapper:
         cls,
         *,
         probe_parent: Path | None = None,
+        codex_cache_root: Path | None = None,
         ones_gateway: Any = None,
         provider_transport: ProviderTransport | None = None,
     ) -> RuntimeBootstrapper:
-        catalog = ManagedProfileCatalog.production(probe_parent=probe_parent)
+        catalog = ManagedProfileCatalog.production(
+            probe_parent=probe_parent,
+            codex_cache_root=codex_cache_root,
+        )
         validator = SetupValidator.production(
             profile_catalog=catalog,
             ones_gateway=ones_gateway,

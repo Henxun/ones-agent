@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import time
 from contextlib import contextmanager
@@ -856,17 +857,21 @@ def _open_run_file_nofollow(
 
     if os.name != "nt":
         try:
-            descriptor_path = next(
-                candidate
-                for candidate in (
-                    Path(f"/proc/self/fd/{descriptor}"),
-                    Path(f"/dev/fd/{descriptor}"),
+            if sys.platform == "darwin":
+                command = getattr(fcntl, "F_GETPATH", 50)
+                raw_path = fcntl.fcntl(descriptor, command, b"\0" * 1024)
+                value = raw_path.split(b"\0", 1)[0]
+                if not value:
+                    raise OSError("empty descriptor path")
+                actual_path = Path(os.fsdecode(value)).resolve(strict=True)
+            elif sys.platform.startswith("linux"):
+                actual_path = Path(f"/proc/self/fd/{descriptor}").resolve(
+                    strict=True
                 )
-                if candidate.exists()
-            )
-            actual_path = descriptor_path.resolve(strict=True)
+            else:
+                raise OSError("descriptor path verification is unavailable")
             expected_path = path.resolve(strict=True)
-        except (OSError, StopIteration) as exc:
+        except (OSError, UnicodeError) as exc:
             os.close(descriptor)
             try:
                 _validate_run_file_identity(path, expected_identity)

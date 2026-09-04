@@ -1123,8 +1123,11 @@ def test_sandbox_executor_stops_before_backend_when_total_budget_is_exhausted(
     )
     assert not any("must-not-run" in item for child in children for item in child)
     assert not command._is_attested()
-    assert not list(tmp_path.glob(".ones-sandbox-*"))
-    assert not list(tmp_path.parent.glob(".ones-sandbox-probes-*"))
+    retained_roots = [
+        *tmp_path.glob(".ones-sandbox-*"),
+        *tmp_path.parent.glob(".ones-sandbox-probes-*"),
+    ]
+    assert all(root.is_dir() and not tuple(root.iterdir()) for root in retained_roots)
 
 
 @pytest.mark.parametrize(
@@ -1792,6 +1795,36 @@ def test_sandbox_directory_nofollow_lease_detects_path_replacement_without_delet
         requirement_module.shutil.rmtree(moved)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor cleanup contract")
+def test_posix_owned_cleanup_empties_nested_tree_without_following_symlink(
+    tmp_path: Path,
+) -> None:
+    import src.developer_workflow.requirement_flow as requirement_module
+
+    root = tmp_path / "owned-root"
+    nested = root / "first" / "second"
+    external = tmp_path / "external-root"
+    nested.mkdir(parents=True)
+    external.mkdir()
+    (nested / "payload.txt").write_text("remove", encoding="utf-8")
+    marker = external / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+    (root / "external-link").symlink_to(external, target_is_directory=True)
+    lease = requirement_module._open_sandbox_directory_nofollow(
+        root, require_owner=True, delete_on_cleanup=True
+    )
+
+    try:
+        deleted = lease.delete_owned_tree()
+
+        assert deleted is False
+        assert root.is_dir()
+        assert not tuple(root.iterdir())
+        assert marker.read_text("utf-8") == "keep"
+    finally:
+        lease.close()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows share-mode contract")
 def test_windows_sandbox_directory_lease_blocks_rename_and_delete_but_allows_child_io(
     tmp_path: Path,
@@ -2342,7 +2375,8 @@ def test_sandbox_capability_probe_rejects_a_profile_that_can_write_outside(
             max_output_bytes=64 * 1024,
         )
 
-    assert not any(tmp_path.glob(".ones-sandbox-probes-*"))
+    retained_roots = tuple(tmp_path.glob(".ones-sandbox-probes-*"))
+    assert all(root.is_dir() and not tuple(root.iterdir()) for root in retained_roots)
     assert not actual_marker.exists()
     assert actual_calls == 0
 

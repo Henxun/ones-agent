@@ -47,6 +47,11 @@ def run_tui(setup_controller: object, runtime_bootstrapper: object) -> None:
         setup_controller_factory=setup_controller,
         runtime_bootstrapper=runtime_bootstrapper,
         setup_import=getattr(setup_controller, "import_context", None),
+        # The current MVP runs Codex with danger-full-access on every host and
+        # has no OS sandbox profile.  Keep the settings projection aligned
+        # with the runtime assembly instead of inferring a capability by OS.
+        sandbox_configured=False,
+        publishing_enabled=False,
     ).run()
 
 __all__ = [

@@ -397,10 +397,20 @@ def test_production_tui_host_shares_validation_codex_preparer_with_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from src.developer_workflow import runtime_bootstrap, setup_validation
+    from src.developer_workflow import (
+        credential_store,
+        platform_support,
+        runtime_bootstrap,
+        setup_validation,
+    )
     import src.developer_workflow.cli as cli_module
 
     shared_preparer = object()
+    host_paths = SimpleNamespace(
+        config_path=tmp_path / "support" / "config.json",
+        cache_root=tmp_path / "cache" / "codex-runtime",
+    )
+    credential_paths: list[object] = []
     events: list[tuple[str, object | None]] = []
     validator_calls: list[tuple[object, object, object]] = []
     validation = SimpleNamespace(
@@ -411,8 +421,8 @@ def test_production_tui_host_shares_validation_codex_preparer_with_runtime(
 
     class ValidationBootstrapper:
         @classmethod
-        def production(cls):
-            events.append(("validation", shared_preparer))
+        def production(cls, *, codex_cache_root: Path | None = None):
+            events.append(("validation", codex_cache_root))
             return validation
 
     class WorkflowBootstrapper:
@@ -431,6 +441,12 @@ def test_production_tui_host_shares_validation_codex_preparer_with_runtime(
 
     monkeypatch.setattr(setup_validation, "RuntimeBootstrapper", ValidationBootstrapper)
     monkeypatch.setattr(runtime_bootstrap, "RuntimeBootstrapper", WorkflowBootstrapper)
+    monkeypatch.setattr(platform_support, "default_host_paths", lambda: host_paths)
+    monkeypatch.setattr(
+        credential_store,
+        "create_credential_store",
+        lambda *, paths: credential_paths.append(paths) or object(),
+    )
     monkeypatch.setattr(
         cli_module,
         "_validate_runtime_sandbox_permission_profile",
@@ -451,9 +467,11 @@ def test_production_tui_host_shares_validation_codex_preparer_with_runtime(
     )
 
     assert factory is not None
+    assert credential_paths == [host_paths]
+    assert host_paths.config_path.parent.is_dir()
     assert runtime.codex_runtime_preparer is shared_preparer
     assert events == [
-        ("validation", shared_preparer),
+        ("validation", host_paths.cache_root),
         ("workflow", shared_preparer),
     ]
     assert validator_calls == [

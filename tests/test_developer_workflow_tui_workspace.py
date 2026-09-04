@@ -28,7 +28,7 @@ def _repository(
         iteration_id="iteration",
         repo_url=f"https://git.example.test/{key}.git",
         repo_name=key,
-        source_path=Path("C:/workspace") / key,
+        source_path=Path("/workspace") / key,
         role=role,
         depends_on=depends_on,
     )
@@ -107,7 +107,7 @@ def test_workspace_folder_entries_include_all_standalone_and_group_members() -> 
         "workspace/primary · primary · primary",
     ]
     assert all("git.example.test" not in label for label in labels)
-    assert all("C:/workspace" not in label for label in labels)
+    assert all("/workspace" not in label for label in labels)
 
 
 def _workflow_config(tmp_path: Path):
@@ -444,6 +444,10 @@ async def test_dashboard_creates_multi_repository_workspace_and_opens_detail() -
         assert screen.query_one("#workspace-home").display
         assert not screen.query_one("#workspace").display
         assert not screen.query("#nav-defects")
+        assert screen.query_one("#workspace-empty").display
+        assert "Create workspace" in str(
+            screen.query_one("#workspace-empty").render()
+        )
         await pilot.click("#create-workspace")
         for _ in range(20):
             await pilot.pause()
@@ -473,6 +477,7 @@ async def test_dashboard_creates_multi_repository_workspace_and_opens_detail() -
                 break
 
         assert isinstance(pilot.app.screen, WorkspaceDetailScreen)
+        assert not screen.query_one("#workspace-empty").display
         assert pilot.app.screen.workspace == created
         assert len(controller.create_calls) == 1
         assert controller.create_calls[0][0] == "project-1-iteration-1"

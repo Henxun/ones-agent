@@ -19,6 +19,7 @@ from pydantic import ValidationError
 
 from .config import DeveloperWorkflowConfig
 from .credential_store import CredentialStore, CredentialStoreError
+from .platform_support import HostPlatformError, default_host_paths
 from .private_paths import (
     PrivatePathError,
     _ADMINISTRATORS_SID,
@@ -104,11 +105,9 @@ class SetupStore:
         if lock_timeout < 0 or lock_poll_interval <= 0:
             raise ValueError("lock timing values must be positive")
         if config_path is None:
-            from .platform_support import user_data_directory
-
             try:
-                config_path = user_data_directory() / "config.json"
-            except OSError:
+                config_path = default_host_paths().config_path
+            except HostPlatformError:
                 raise SetupStoreError("configuration path is unavailable") from None
         candidate = Path(config_path).absolute()
         if candidate.name != "config.json" or _has_unsafe_ancestor(candidate):

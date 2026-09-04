@@ -44,8 +44,13 @@ OID = "a" * 40
 EMPTY_HASH = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
-def _verify_test_execution_lease(lease: object) -> None:
-    if not lease.verify():  # type: ignore[attr-defined]
+def _verify_test_execution_lease(
+    lease: object, *, cache_root: Path,
+) -> None:
+    if (
+        not lease.verify()  # type: ignore[attr-defined]
+        or lease._cache_root != cache_root  # type: ignore[attr-defined]
+    ):
         raise OSError("test execution lease is invalid")
 
 
@@ -412,6 +417,7 @@ def test_production_os_verifier_rejects_test_adapter_lease(
         with pytest.raises(OSError, match="OS verification"):
             runtime_module.verify_locked_private_codex_for_execution(
                 command._lease,
+                cache_root=command._cache_root,
             )
     finally:
         command.close()
@@ -1691,7 +1697,10 @@ def test_run_isolates_home_and_git_credentials_from_child_environment(
     )
     environment = executor.calls[0][2]
     run_directory = (tmp_path / "runs" / "run-1").resolve()
-    for name in ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"):
+    expected_locations = ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"]
+    if os.name == "nt":
+        expected_locations.extend(("USERPROFILE", "APPDATA", "LOCALAPPDATA"))
+    for name in expected_locations:
         value = Path(environment[name]).resolve()
         assert value != parent_home.resolve()
         assert value != parent_appdata.resolve()
@@ -1703,9 +1712,18 @@ def test_run_isolates_home_and_git_credentials_from_child_environment(
         assert config.read_bytes() == b""
     assert environment["GIT_TERMINAL_PROMPT"] == "0"
     assert environment["GCM_INTERACTIVE"] == "Never"
-    powershell_cache = Path(environment["PSModuleAnalysisCachePath"]).resolve()
-    assert powershell_cache.is_relative_to(run_directory)
-    assert not powershell_cache.is_relative_to(prepared.path.resolve())
+    if os.name == "nt":
+        powershell_cache = Path(environment["PSModuleAnalysisCachePath"]).resolve()
+        assert powershell_cache.is_relative_to(run_directory)
+        assert not powershell_cache.is_relative_to(prepared.path.resolve())
+    else:
+        assert not any(
+            name in environment
+            for name in (
+                "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+                "PSModuleAnalysisCachePath",
+            )
+        )
     assert not any(
         name in environment
         for name in ("GIT_ASKPASS", "SSH_ASKPASS", "SSH_AUTH_SOCK")
@@ -1766,11 +1784,14 @@ def test_run_maps_default_userprofile_codex_login_without_restoring_user_home(
     assert (isolated_home / "auth.json").read_text(encoding="utf-8") == "{}"
     assert not (isolated_home / "skills").exists()
     assert Path(environment["HOME"]).is_relative_to(tmp_path / "runs" / "run-1")
-    assert Path(environment["USERPROFILE"]).is_relative_to(
-        tmp_path / "runs" / "run-1"
-    )
     assert Path(environment["HOME"]) != parent_home
-    assert Path(environment["USERPROFILE"]) != parent_profile
+    if os.name == "nt":
+        assert Path(environment["USERPROFILE"]).is_relative_to(
+            tmp_path / "runs" / "run-1"
+        )
+        assert Path(environment["USERPROFILE"]) != parent_profile
+    else:
+        assert "USERPROFILE" not in environment
 
 
 def test_run_does_not_invent_codex_home_when_default_login_directory_is_absent(

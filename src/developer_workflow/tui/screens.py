@@ -347,12 +347,18 @@ class WorkspaceListPane(Vertical):
     def compose(self) -> ComposeResult:
         yield Label("Workspaces", classes="pane-title")
         yield Button("Create workspace", id="create-workspace", variant="primary")
+        yield Static(
+            "还没有工作区。点击 Create workspace，选择 ONES 项目、迭代和本地仓库。",
+            id="workspace-empty",
+            markup=False,
+        )
         yield ListView(id="workspace-list")
 
     async def replace_workspaces(
         self, workspaces: tuple[WorkspaceSummary, ...]
     ) -> None:
         listing = self.query_one("#workspace-list", ListView)
+        self.query_one("#workspace-empty", Static).display = not workspaces
         await listing.clear()
         await listing.extend(
             ListItem(
@@ -2265,11 +2271,16 @@ class DashboardScreen(Screen[None]):
         controller: TuiController,
         supervisor: RunTaskSupervisor,
         settings: SettingsView,
+        *,
+        publishing_enabled: bool = True,
     ) -> None:
         super().__init__(id="dashboard-screen")
+        if type(publishing_enabled) is not bool:
+            raise ValueError("publishing capability is invalid")
         self._controller = controller
         self._supervisor = supervisor
         self._settings = settings
+        self._publishing_enabled = publishing_enabled
         self._runs: tuple[RunSummary, ...] = ()
         self._detail_error = ""
         self._refreshing = False
@@ -2353,8 +2364,19 @@ class DashboardScreen(Screen[None]):
             detail
             and detail.summary.run_id in self._workflow_running_run_ids
         )
-        approve.display = bool(detail and not workflow_running and detail.summary.state is WorkflowState.WAITING_APPROVAL)
-        approve.label = "审批并创建 Draft PR" if detail and detail.draft_pr else "审批并创建 PR"
+        approve.display = bool(
+            detail
+            and not workflow_running
+            and detail.summary.state is WorkflowState.WAITING_APPROVAL
+        )
+        approve.disabled = not self._publishing_enabled
+        approve.label = (
+            "MVP 未启用 PR 发布"
+            if not self._publishing_enabled
+            else "审批并创建 Draft PR"
+            if detail and detail.draft_pr
+            else "审批并创建 PR"
+        )
         accept.display = bool(
             detail and detail.can_accept_analysis and not workflow_running
         )
@@ -2745,6 +2767,9 @@ class DashboardScreen(Screen[None]):
         }
 
     async def action_approve(self) -> None:
+        if not self._publishing_enabled:
+            self._show_action_notice("MVP 未启用 commit、push 或 PR 发布")
+            return
         summary = self._selected_summary()
         if summary is None or summary.state is not WorkflowState.WAITING_APPROVAL:
             self._show_action_notice(_ACTION_UNAVAILABLE)
@@ -2894,6 +2919,9 @@ class DashboardScreen(Screen[None]):
             )
         )
         if publication_resume:
+            if not self._publishing_enabled:
+                self._show_action_notice("MVP 未启用 commit、push 或 PR 发布")
+                return
             request = await self._prepare_action("resume-publication")
             valid_publication_request = request is not None and (
                 request.state
@@ -3097,6 +3125,9 @@ class DashboardScreen(Screen[None]):
 
     async def _publication_resume_done(self, submission: object | None) -> None:
         if not isinstance(submission, DangerousActionRequest):
+            return
+        if not self._publishing_enabled:
+            self._show_action_notice("MVP 未启用 commit、push 或 PR 发布")
             return
         await self._run_dangerous(
             submission,

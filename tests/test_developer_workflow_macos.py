@@ -8,8 +8,6 @@ import pytest
 
 from src.developer_workflow import credential_store, platform_support
 from src.developer_workflow import macos_credentials, macos_runtime
-from src.developer_workflow.credential_store import CredentialStoreError, WindowsCredentialStore
-from src.developer_workflow.setup_models import RuntimeSecrets, SecretKind
 
 
 def test_macos_path_uses_os_account_not_environment(monkeypatch, tmp_path):
@@ -28,81 +26,6 @@ def test_macos_vault_factory_never_uses_windows_backend(monkeypatch):
     monkeypatch.setattr(credential_store, "sys", SimpleNamespace(platform="darwin"))
     monkeypatch.setattr(macos_credentials, "MacOSCredentialStore", lambda: expected)
     assert credential_store.create_credential_store() is expected
-
-
-class FakeSecurity:
-    kSecClass = "class"
-    kSecClassGenericPassword = "generic"
-    kSecAttrService = "service"
-    kSecAttrAccount = "account"
-    kSecValueData = "data"
-    kSecReturnData = "return_data"
-    kSecReturnAttributes = "return_attributes"
-    kSecMatchLimit = "limit"
-    kSecMatchLimitOne = "one"
-    kSecMatchLimitAll = "all"
-    errSecSuccess = 0
-    errSecItemNotFound = -25300
-
-    def __init__(self):
-        self.entries = {}
-        self.denied = False
-
-    def SecItemUpdate(self, query, attrs):
-        key = (query["service"], query["account"])
-        if self.denied:
-            return -25293
-        if key not in self.entries:
-            return self.errSecItemNotFound
-        self.entries[key] = attrs["data"]
-        return 0
-
-    def SecItemAdd(self, query, _out):
-        self.entries[(query["service"], query["account"])] = query["data"]
-        return 0, None
-
-    def SecItemDelete(self, query):
-        key = (query["service"], query["account"])
-        return 0 if self.entries.pop(key, None) is not None else self.errSecItemNotFound
-
-    def SecItemCopyMatching(self, query, _out):
-        if self.denied:
-            return -25293, None
-        if query.get("return_data"):
-            value = self.entries.get((query["service"], query["account"]))
-            return (0, value) if value is not None else (self.errSecItemNotFound, None)
-        values = [{"account": account} for service, account in self.entries
-                  if service == query["service"]]
-        return (0, values) if values else (self.errSecItemNotFound, None)
-
-
-@pytest.fixture
-def vault(monkeypatch):
-    api = FakeSecurity()
-    monkeypatch.setitem(sys.modules, "Security", api)
-    return WindowsCredentialStore(macos_credentials._KeychainBackend()), api
-
-
-def test_keychain_generation_roundtrip_and_scoped_delete(vault):
-    store, api = vault
-    kind = next(iter(SecretKind))
-    generation = "a" * 32
-    api.entries[("other.app", "unrelated")] = b"leave alone"
-    assert store.write_fresh_generation("default", generation, RuntimeSecrets({kind: "test-value"}))
-    assert store.read_generation("default", generation, (kind,)).values[kind] == "test-value"
-    assert store.list_generations("default") == (generation,)
-    with pytest.raises(CredentialStoreError):
-        store.write_fresh_generation("default", generation, RuntimeSecrets({kind: "replacement"}))
-    store.delete_generation("default", generation)
-    assert store.list_generations("default") == ()
-    assert api.entries == {("other.app", "unrelated"): b"leave alone"}
-
-
-def test_keychain_denial_is_not_missing_credentials(vault):
-    store, api = vault
-    api.denied = True
-    with pytest.raises(CredentialStoreError, match="^credential operation failed$"):
-        store.list_generations("default")
 
 
 @pytest.mark.parametrize("machine,package,triple", [
@@ -132,7 +55,7 @@ def test_native_discovery_rejects_repository_payload_and_closes_handle(monkeypat
     adapter = SimpleNamespace(
         open_locked=lambda _: 42, final_path=lambda _: path,
         identity=lambda _: identity,
-        verify_publisher=lambda *_: macos_runtime.OPENAI_AUTHENTICODE_PUBLISHER,
+        verify_publisher=lambda *_: macos_runtime.OPENAI_MACOS_CODESIGN_PUBLISHER,
         close=closed.append,
     )
     monkeypatch.setattr(macos_runtime, "MacOSRuntimeAdapter", lambda: adapter)
@@ -150,29 +73,31 @@ def test_native_discovery_rejects_repository_payload_and_closes_handle(monkeypat
 
 @pytest.mark.parametrize("returncode", [0, 1])
 def test_signature_requires_apple_trust_and_openai_organization(monkeypatch, tmp_path, returncode):
-    adapter = object.__new__(macos_runtime.MacOSRuntimeAdapter)
     path = tmp_path / "codex"
-    monkeypatch.setattr(macos_runtime, "_trusted_chain", lambda _: None)
-    monkeypatch.setattr(adapter, "identity", lambda _: (1, 2))
-    monkeypatch.setattr(adapter, "final_path", lambda _: path)
-    monkeypatch.setattr(adapter, "same_file", lambda a, b: a == b)
     calls = []
 
     def run(argv, **kwargs):
         calls.append((argv, kwargs))
-        return SimpleNamespace(returncode=returncode)
+        output = (
+            b"Identifier=codex\n"
+            b"TeamIdentifier=2DC432GLL2\n"
+            b"CodeDirectory flags=0x10000(runtime)\n"
+        )
+        return SimpleNamespace(returncode=returncode, stdout=output)
 
     monkeypatch.setattr(macos_runtime.subprocess, "run", run)
     if returncode:
-        with pytest.raises(OSError, match="signature is invalid"):
-            adapter.verify_publisher(1, path)
+        with pytest.raises(OSError, match="signature is not trusted"):
+            macos_runtime._verify_macos_signature(path)
     else:
-        assert adapter.verify_publisher(1, path) == macos_runtime.OPENAI_AUTHENTICODE_PUBLISHER
+        macos_runtime._verify_macos_signature(path)
     argv, options = calls[0]
     assert argv[0] == "/usr/bin/codesign"
-    assert "anchor apple generic" in argv[argv.index("-R") + 1]
-    assert 'subject.O] = "OpenAI OpCo, LLC"' in argv[argv.index("-R") + 1]
-    assert options["shell"] is False and options["timeout"] == 15
+    assert "anchor apple generic" in argv[argv.index("--test-requirement") + 1]
+    assert macos_runtime.OPENAI_MACOS_TEAM_IDENTIFIER in argv[
+        argv.index("--test-requirement") + 1
+    ]
+    assert options.get("shell", False) is False and options["timeout"] == 5.0
     assert "DYLD_LIBRARY_PATH" not in options["env"]
 
 
@@ -236,13 +161,38 @@ def test_macos_ssh_keeps_strict_trust_and_never_reads_keys(monkeypatch, tmp_path
     assert "-oIdentityAgent=none" in args
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="native macOS filesystem test")
+def test_macos_ssh_rejects_other_writable_ssh_directory(monkeypatch, tmp_path):
+    import pwd
+    import shlex
+    from src.developer_workflow import repository
+
+    root = tmp_path.resolve()
+    directory = root / ".ssh"
+    directory.mkdir()
+    directory.chmod(0o777)
+    known_hosts = directory / "known_hosts"
+    known_hosts.write_text("fixture", encoding="utf-8")
+    key = directory / "id_ed25519"
+    key.write_text("fixture", encoding="utf-8")
+    key.chmod(0o600)
+    monkeypatch.setattr(pwd, "getpwuid", lambda _: SimpleNamespace(pw_dir=str(root)))
+
+    args = shlex.split(repository._macos_ssh_command())
+
+    assert "-oUserKnownHostsFile=/dev/null" in args
+    assert "-oIdentityFile=none" in args
+    assert str(known_hosts) not in args
+    assert str(key) not in args
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="native macOS persistence test")
-def test_macos_setup_store_uses_posix_lock_and_persistence(tmp_path, monkeypatch):
+def test_macos_setup_store_uses_posix_lock_and_persistence(tmp_path):
     from src.developer_workflow.setup_store import SetupStore
 
-    api = FakeSecurity()
-    monkeypatch.setitem(sys.modules, "Security", api)
-    credentials = WindowsCredentialStore(macos_credentials._KeychainBackend())
+    # Empty-state persistence does not access secrets; native Keychain behavior is
+    # covered independently by the ctypes backend tests.
+    credentials = SimpleNamespace()
     store = SetupStore(credentials, config_path=tmp_path.resolve() / "config/config.json")
     empty = store.load_or_empty(profile_id="default")
     assert empty is not None

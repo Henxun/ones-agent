@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+import sys
 import threading
 import time
 from datetime import UTC, datetime
@@ -88,6 +89,14 @@ def test_create_load_round_trip_and_utc_version(tmp_path: Path) -> None:
     assert loaded.updated_at.tzinfo is not None
     assert loaded.updated_at.utcoffset() == UTC.utcoffset(loaded.updated_at)
     assert json.loads((tmp_path / created.run_id / "run.json").read_text("utf-8"))["run_id"] == created.run_id
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="F_GETPATH is Darwin-only")
+def test_read_only_load_uses_darwin_open_descriptor_path(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path)
+    created = store.create(new_run())
+
+    assert store.load(created.run_id, read_only=True) == created
 
 
 def test_delete_removes_task_record_and_private_run_data(tmp_path: Path) -> None:

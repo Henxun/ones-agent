@@ -104,6 +104,55 @@ class _WorktreeRegistration:
 CommandRunner = Callable[[Sequence[str], Path | None], subprocess.CompletedProcess[bytes]]
 
 
+def _path_from_open_descriptor(descriptor: int) -> Path:
+    """Resolve a POSIX file path from the already-open descriptor.
+
+    Unsupported POSIX hosts fail closed rather than falling back to the caller's
+    pathname, because that pathname can be replaced after ``os.open`` returns.
+    """
+
+    if sys.platform == "darwin":
+        import fcntl
+
+        # Darwin's F_GETPATH writes MAXPATHLEN bytes for the object referenced by
+        # the descriptor. Using this handle-bound result is essential: resolving
+        # the original pathname here would reintroduce a symlink-swap race.
+        command = getattr(fcntl, "F_GETPATH", 50)
+        try:
+            raw_path = fcntl.fcntl(descriptor, command, b"\0" * 1024)
+        except OSError as error:
+            raise RepositoryBoundaryError(
+                "changed file handle could not be verified"
+            ) from error
+        value = raw_path.split(b"\0", 1)[0]
+        if not value:
+            raise RepositoryBoundaryError(
+                "changed file handle could not be verified"
+            )
+        try:
+            path = Path(os.fsdecode(value))
+        except UnicodeError as error:
+            raise RepositoryBoundaryError(
+                "changed file handle could not be verified"
+            ) from error
+        if not path.is_absolute():
+            raise RepositoryBoundaryError(
+                "changed file handle could not be verified"
+            )
+        return path
+
+    if sys.platform.startswith("linux"):
+        descriptor_path = Path(f"/proc/self/fd/{descriptor}")
+        try:
+            return descriptor_path.resolve(strict=True)
+        except OSError as error:
+            raise RepositoryBoundaryError(
+                "changed file handle could not be verified"
+            ) from error
+
+    raise RepositoryBoundaryError("changed file handle could not be verified")
+
+
 def _open_readonly_nofollow(path: Path, *, worktree: Path | None = None) -> int:
     """Open a regular file without ever traversing a final reparse point."""
 
@@ -116,15 +165,10 @@ def _open_readonly_nofollow(path: Path, *, worktree: Path | None = None) -> int:
                 "changed file could not be safely opened"
             ) from error
         if worktree is not None:
-            descriptor_path = Path(f"/proc/self/fd/{descriptor}")
             try:
-                actual = (
-                    descriptor_path.resolve(strict=True)
-                    if descriptor_path.exists()
-                    else path.resolve(strict=True)
-                )
+                actual = _path_from_open_descriptor(descriptor)
                 root = worktree.resolve(strict=True)
-            except OSError as error:
+            except (OSError, RepositoryBoundaryError) as error:
                 os.close(descriptor)
                 raise RepositoryBoundaryError(
                     "changed file handle could not be verified"
@@ -275,6 +319,15 @@ def _macos_ssh_command() -> str:
 
     directory = Path(pwd.getpwuid(os.geteuid()).pw_dir) / ".ssh"
 
+    def safe_directory(path: Path) -> bool:
+        try:
+            info = path.lstat()
+            return (stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
+                    and not info.st_mode & 0o022
+                    and not _has_link_or_reparse_ancestor(path))
+        except OSError:
+            return False
+
     def safe(path: Path, *, private: bool = False) -> bool:
         try:
             info = path.lstat()
@@ -284,11 +337,19 @@ def _macos_ssh_command() -> str:
         except OSError:
             return False
 
-    known_hosts = directory / "known_hosts"
     args = ["/usr/bin/ssh", "-F", "/dev/null", "-oBatchMode=yes", "-oIdentitiesOnly=yes",
             "-oStrictHostKeyChecking=yes", "-oUpdateHostKeys=no", "-oIdentityAgent=none",
-            "-oGlobalKnownHostsFile=/dev/null",
-            "-oUserKnownHostsFile=" + (str(known_hosts) if safe(known_hosts) else "/dev/null")]
+            "-oGlobalKnownHostsFile=/dev/null"]
+    # An untrusted ~/.ssh lets another local user replace its children, so do
+    # not expose any path below it to ssh.
+    if not safe_directory(directory):
+        args.extend(("-oUserKnownHostsFile=/dev/null", "-oIdentityFile=none"))
+        return shlex.join(args)
+
+    known_hosts = directory / "known_hosts"
+    args.append("-oUserKnownHostsFile=" + (
+        str(known_hosts) if safe(known_hosts) else "/dev/null"
+    ))
     keys = [directory / name for name in ("id_ed25519", "id_ecdsa", "id_rsa")]
     for key in keys:
         if safe(key, private=True):
@@ -343,7 +404,14 @@ def _isolated_git_environment(
             "GIT_CONFIG_VALUE_0": os.devnull,
             "GIT_TERMINAL_PROMPT": "0",
             "GCM_INTERACTIVE": "Never",
-            "GIT_SSH_COMMAND": "ssh -oBatchMode=yes -oIdentitiesOnly=yes",
+            # Ignore both user and system SSH configuration. In particular, a
+            # system-wide Include or ProxyCommand must not regain execution in
+            # a supposedly isolated Git subprocess.
+            "GIT_SSH_COMMAND": (
+                "ssh -F none -oProxyCommand=none -oBatchMode=yes "
+                "-oIdentitiesOnly=yes -oStrictHostKeyChecking=yes "
+                "-oUpdateHostKeys=no"
+            ),
         }
     )
     environment.update(supplied)
