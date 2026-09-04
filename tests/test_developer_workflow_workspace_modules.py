@@ -6,15 +6,61 @@ from types import SimpleNamespace
 
 import pytest
 from textual.app import App
+from textual import on
 from textual.widgets import Button, Input, ListView, Static, TabbedContent
 
 from src.developer_workflow.contracts import RepositoryMapping, WorkflowRun, WorkflowState, WorkflowType
 from src.developer_workflow.tui.models import RunFilter, WorkspaceSummary, RunSummary, RunActivity
 from src.developer_workflow.tui.run_index import RunIndex
-from src.developer_workflow.tui.screens import WorkspaceDetailScreen, RequirementWizardScreen
+from src.developer_workflow.tui.screens import WorkspaceDetailScreen, RequirementWizardScreen, WorkspaceListPane, WorkspaceRenameScreen
+from dataclasses import replace
 
 
 WORKSPACE = WorkspaceSummary("camera", "project", "iteration", ("camera-sdk", "desktop"))
+
+
+class HomeCardsApp(App):
+    CSS_PATH = "../src/developer_workflow/tui/tui.tcss"
+
+    def compose(self):
+        yield WorkspaceListPane(id="workspace-list-pane")
+
+    @on(ListView.Selected, "#workspace-list")
+    def selected(self, event):
+        self.selected_id = event.item.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(80, 24), (140, 42)])
+async def test_home_workspace_cards_layout_and_selection(size):
+    app = HomeCardsApp()
+    workspaces = (WORKSPACE, WorkspaceSummary("[literal] 工作区", "project-two", "iteration-two",
+                                              ("仓库一", "仓库二", "仓库三", "仓库四")))
+    async with app.run_test(size=size) as pilot:
+        pane = app.query_one(WorkspaceListPane)
+        await pane.replace_workspaces(workspaces)
+        await pilot.pause()
+        cards = list(app.query(".workspace-home-card"))
+        assert len(cards) == 2
+        assert cards[1].region.y > cards[0].region.bottom
+        assert not app.query_one("#workspace-empty").display
+        for card in cards:
+            assert card.query_one(".workspace-home-title", Static).markup is False
+            assert card.query_one(".workspace-home-open").region.bottom < card.region.bottom
+            assert card.region.right <= size[0]
+        assert "进入查看全部" in str(cards[1].query_one(".workspace-home-repos", Static).render())
+        await pilot.click(cards[0].query_one(".workspace-home-title"))
+        await pilot.pause()
+        assert app.selected_id == "workspace-item-0"
+        listing = app.query_one("#workspace-list", ListView)
+        listing.focus()
+        listing.index = 1
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.selected_id == "workspace-item-1"
+        await pane.replace_workspaces(())
+        assert app.query_one("#workspace-empty").display
+        assert len(listing.children) == 0
 
 
 def test_workspace_tasks_use_mapping_not_only_project_and_iteration():
@@ -63,6 +109,37 @@ class WorkspaceApp(App):
 
     async def on_mount(self):
         await self.push_screen(WorkspaceDetailScreen(self.controller, Supervisor(), WORKSPACE))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(80, 24), (140, 42)])
+async def test_workspace_rename_changes_only_label(size):
+    app = WorkspaceApp()
+    calls = []
+    def rename(key, name):
+        calls.append((key, name))
+        return replace(WORKSPACE, display_name=name)
+    app.controller.rename_workspace = rename
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        detail = app.screen
+        detail.query_one("#workspace-rename", Button).press()
+        for _ in range(30):
+            await pilot.pause(0.05)
+            if app.screen.query("#workspace-rename-name"):
+                break
+        assert isinstance(app.screen, WorkspaceRenameScreen)
+        app.screen.query_one("#workspace-rename-name", Input).value = "桌面端 [回归测试]"
+        app.screen.query_one("#workspace-rename-save", Button).press()
+        for _ in range(30):
+            await pilot.pause(0.05)
+            if app.screen is detail:
+                break
+        assert detail.workspace.key == WORKSPACE.key
+        assert detail.workspace.label == "桌面端 [回归测试]"
+        assert calls == [(WORKSPACE.key, "桌面端 [回归测试]")]
+        assert "桌面端 [回归测试]" in str(detail.query_one("#workspace-heading", Static).render())
+        assert detail.query_one("#workspace-delete").region.right <= size[0]
 
 
 @pytest.mark.asyncio
@@ -132,6 +209,10 @@ async def test_workspace_tabs_footer_and_requirement_scope(size):
         screen.query_one("#workspace-query-requirements", Button).press()
         await pilot.pause()
         assert isinstance(app.screen, RequirementWizardScreen)
+        for _ in range(30):
+            if app.screen.query("#requirement-project"):
+                break
+            await pilot.pause(0.05)
         project = app.screen.query_one("#requirement-project", Input)
         iteration = app.screen.query_one("#requirement-iteration", Input)
         assert (project.value, iteration.value) == ("project", "iteration")

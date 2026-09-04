@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 import re
+import uuid
 from typing import Literal
 import unicodedata
 from urllib.parse import urlsplit
@@ -345,10 +346,13 @@ class WorkspaceListPane(Vertical):
     """Top-level list of project/iteration workspaces."""
 
     def compose(self) -> ComposeResult:
-        yield Label("Workspaces", classes="pane-title")
-        yield Button("Create workspace", id="create-workspace", variant="primary")
+        yield Label("工作区", classes="pane-title")
+        yield Static("按项目和迭代组织仓库，进入工作区查询缺陷、需求及管理任务。",
+                     id="workspace-home-description", markup=False)
+        yield Button("创建工作区", id="create-workspace", variant="primary")
+        yield Static("", id="workspace-list-summary", markup=False)
         yield Static(
-            "还没有工作区。点击 Create workspace，选择 ONES 项目、迭代和本地仓库。",
+            "还没有工作区。点击「创建工作区」，选择 ONES 项目、迭代和本地仓库。",
             id="workspace-empty",
             markup=False,
         )
@@ -359,21 +363,24 @@ class WorkspaceListPane(Vertical):
     ) -> None:
         listing = self.query_one("#workspace-list", ListView)
         self.query_one("#workspace-empty", Static).display = not workspaces
+        self.query_one("#workspace-list-summary", Static).update(
+            f"共 {len(workspaces)} 个工作区 · 点击卡片或 ↑↓ 选择后按 Enter 进入" if workspaces else "")
         await listing.clear()
         await listing.extend(
             ListItem(
-                Label(
-                    "  ".join(
-                        (
-                            item.key,
-                            f"project: {item.project_id}",
-                            f"iteration: {item.iteration_id}",
-                            f"repos: {len(item.repositories)}",
-                        )
-                    ),
-                    markup=False,
+                Vertical(
+                    Static(item.label, markup=False, classes="workspace-home-title"),
+                    Static(f"项目：{item.project_id}  ·  迭代：{item.iteration_id}",
+                           markup=False, classes="workspace-home-scope"),
+                    Static(f"关联仓库 · {len(item.repositories)} 个", markup=False,
+                           classes="workspace-home-repo-count"),
+                    Static("、".join(item.repositories[:3]) + (" …（进入查看全部）" if len(item.repositories) > 3 else "")
+                           if item.repositories else "暂无关联仓库", markup=False, classes="workspace-home-repos"),
+                    Static("进入工作区 →", classes="workspace-home-open"),
+                    classes="workspace-home-content",
                 ),
                 id=f"workspace-item-{index}",
+                classes="workspace-home-card",
             )
             for index, item in enumerate(workspaces)
         )
@@ -1810,7 +1817,8 @@ class WorkspaceCreateScreen(Screen[WorkspaceSummary | None]):
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="workspace-create-body"):
             yield Label("Create workspace", classes="pane-title")
-            yield Input(placeholder="Workspace name", id="workspace-name")
+            yield Label("工作区名称（支持中文和空格，可稍后修改）")
+            yield Input(placeholder="例如：桌面端 回归测试", id="workspace-name", max_length=128)
             yield Select([], prompt="Loading ONES projects…", id="workspace-project", disabled=True)
             yield Select([], prompt="Select project first", id="workspace-iteration", disabled=True)
             yield Label("Repositories (the first repository is primary)")
@@ -1918,8 +1926,9 @@ class WorkspaceCreateScreen(Screen[WorkspaceSummary | None]):
             self._notice("Add at least one repository")
             return
         entered_name = self.query_one("#workspace-name", Input).value.strip()
-        key = _workspace_key_from_scope(project, iteration, entered_name)
-        self.query_one("#workspace-name", Input).value = key
+        if not hasattr(self, "_workspace_id"):
+            self._workspace_id = f"workspace-{uuid.uuid4().hex}"
+        key = self._workspace_id
         try:
             created = await asyncio.to_thread(
                 self._controller.create_workspace,
@@ -1927,6 +1936,7 @@ class WorkspaceCreateScreen(Screen[WorkspaceSummary | None]):
                 project,
                 iteration,
                 tuple(self._repositories),
+                display_name=entered_name or f"{project}-{iteration}",
             )
         except Exception:
             self._notice("Workspace could not be saved")
@@ -2046,7 +2056,7 @@ class WorkspaceDeleteConfirmation(ModalScreen[bool]):
         with VerticalScroll():
             yield Label("Delete workspace", classes="pane-title")
             yield Static(
-                f"Delete workspace '{self.workspace.key}' from this app?\n"
+                f"Delete workspace '{self.workspace.label}' (ID: {self.workspace.key}) from this app?\n"
                 "Local repositories, remote repositories, and ONES data will not be deleted.",
                 markup=False,
             )
@@ -2069,6 +2079,55 @@ class WorkspaceDeleteConfirmation(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class WorkspaceRenameScreen(ModalScreen[WorkspaceSummary | None]):
+    DEFAULT_CSS = """
+    WorkspaceRenameScreen { align: center middle; }
+    WorkspaceRenameScreen > VerticalScroll {
+        width: 90%; max-width: 80; height: auto; max-height: 90%;
+        border: round $primary; padding: 1 2;
+    }
+    WorkspaceRenameScreen Horizontal { height: 3; }
+    """
+    BINDINGS = [("escape", "cancel", "取消")]
+
+    def __init__(self, controller, supervisor, workspace: WorkspaceSummary) -> None:
+        super().__init__()
+        self.controller, self.supervisor, self.workspace = controller, supervisor, workspace
+        self._saving = False
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll():
+            yield Label("重命名工作区")
+            yield Static(f"内部 ID：{self.workspace.key}\n只修改显示名称，不影响任务和定时计划。", markup=False)
+            yield Input(self.workspace.label, max_length=128, id="workspace-rename-name")
+            yield Static("", id="workspace-rename-error", markup=False)
+            with Horizontal():
+                yield Button("取消", id="workspace-rename-cancel")
+                yield Button("保存名称", id="workspace-rename-save", variant="primary")
+
+    @on(Button.Pressed)
+    async def pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        if event.button.id == "workspace-rename-cancel":
+            self.action_cancel()
+        elif event.button.id == "workspace-rename-save" and not self._saving:
+            self._saving = True
+            event.button.disabled = True
+            try:
+                workspace = await self.supervisor.run_readonly("rename-workspace", self.controller.rename_workspace,
+                    self.workspace.key, self.query_one(Input).value)
+                self.dismiss(workspace)
+            except Exception:
+                self.query_one("#workspace-rename-error", Static).update("保存失败，请检查名称（1～128 字符）和配置权限。")
+                event.button.disabled = False
+            finally:
+                self._saving = False
+
+    def action_cancel(self) -> None:
+        if not self._saving:
+            self.dismiss(None)
+
+
 class WorkspaceDetailScreen(Screen[bool]):
     """Workspace-scoped entry point for defect queries."""
 
@@ -2087,7 +2146,8 @@ class WorkspaceDetailScreen(Screen[bool]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="workspace-detail-body"):
-            yield Static(Text(self.workspace.key, style="bold cyan"), id="workspace-heading")
+            yield Static(Text(self.workspace.label, style="bold cyan"), id="workspace-heading")
+            yield Static(f"内部 ID：{self.workspace.key}", markup=False, id="workspace-identity")
             yield Static(
                 f"项目 {self.workspace.project_id}  ·  迭代 {self.workspace.iteration_id}  ·  "
                 f"{len(self.workspace.repositories)} 个仓库", markup=False, id="workspace-scope")
@@ -2117,7 +2177,18 @@ class WorkspaceDetailScreen(Screen[bool]):
         yield Static("", id="workspace-detail-notice", markup=False)
         with Horizontal(id="workspace-detail-footer"):
             yield Button("返回工作区", id="workspace-detail-back")
+            yield Button("重命名", id="workspace-rename")
             yield Button("删除工作区", id="workspace-delete", variant="error")
+
+    @on(Button.Pressed, "#workspace-rename")
+    def _rename_workspace(self) -> None:
+        self.app.push_screen(WorkspaceRenameScreen(self._controller, self._supervisor, self.workspace),
+                             callback=self._renamed)
+
+    def _renamed(self, workspace: WorkspaceSummary | None) -> None:
+        if workspace is not None:
+            self.workspace = workspace
+            self.query_one("#workspace-heading", Static).update(Text(workspace.label, style="bold cyan"))
 
     @on(Button.Pressed, "#workspace-query-requirements")
     def _query_requirements(self) -> None:
@@ -3203,7 +3274,7 @@ class DashboardScreen(Screen[None]):
         )
 
     async def _workspace_detail_closed(self, deleted: bool | None) -> None:
-        if deleted is True:
+        if deleted is not None:
             await self.refresh_workspaces()
 
     @on(ListView.Selected, "#workspace-list")

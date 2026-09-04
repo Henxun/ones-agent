@@ -115,6 +115,10 @@ async def test_delete_requires_confirmation(tmp_path, size):
         assert store.list() == (p,)
         app.query_one(f"#delete-{p.id}", Button).press()
         await pilot.pause()
+        for _ in range(30):
+            if app.screen.query("#schedule-delete-confirm"):
+                break
+            await pilot.pause(0.05)
         assert app.screen.query_one("#schedule-delete-confirm", Button).region.bottom <= size[1]
         app.screen.query_one("#schedule-delete-confirm", Button).press()
         for _ in range(30):

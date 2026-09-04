@@ -90,6 +90,11 @@ class WorkspaceSummary:
     project_id: str
     iteration_id: str
     repositories: tuple[str, ...]
+    display_name: str = ""
+
+    @property
+    def label(self) -> str:
+        return self.display_name or self.key
 
 
 @dataclass(frozen=True, slots=True)

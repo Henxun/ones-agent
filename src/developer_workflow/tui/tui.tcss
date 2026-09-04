@@ -287,6 +287,29 @@ WorkspaceDeleteConfirmation > VerticalScroll {
     height: 1fr;
     margin-top: 1;
 }
+#workspace-home-description, #workspace-list-summary, #workspace-empty {
+    height: auto;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+#workspace-list-summary { margin-top: 1; margin-bottom: 0; }
+#workspace-list .workspace-home-card {
+    height: auto;
+    border: round $primary;
+    background: $surface;
+    padding: 0 1;
+    margin-bottom: 1;
+}
+#workspace-list .workspace-home-content,
+#workspace-list .workspace-home-card Static { height: auto; }
+#workspace-list .workspace-home-title { text-style: bold; color: $accent; }
+#workspace-list .workspace-home-scope { color: $text-muted; }
+#workspace-list .workspace-home-repo-count { margin-top: 1; text-style: bold; }
+#workspace-list .workspace-home-open { margin-top: 1; color: $accent; }
+#workspace-list .workspace-home-card.-highlight {
+    border: round $accent;
+    background: $boost;
+}
 
 #workspace-create-screen,
 #workspace-detail-screen {
@@ -303,6 +326,7 @@ WorkspaceDeleteConfirmation > VerticalScroll {
     height: auto;
     padding: 0 1;
 }
+#workspace-identity { height: auto; color: $text-muted; padding: 0 1; }
 
 #workspace-scope {
     height: auto;

@@ -354,6 +354,7 @@ class TuiController:
             workspaces = [
                 WorkspaceSummary(
                     key=safe_tui_text(group.key, maximum=128),
+                    display_name=getattr(config, "workspace_names", {}).get(group.key, ""),
                     project_id=safe_tui_text(group.project_id, maximum=128),
                     iteration_id=safe_tui_text(group.iteration_id, maximum=128),
                     repositories=tuple(
@@ -371,6 +372,7 @@ class TuiController:
             workspaces.extend(
                 WorkspaceSummary(
                     key=safe_tui_text(item.key, maximum=128),
+                    display_name=getattr(config, "workspace_names", {}).get(item.key, ""),
                     project_id=safe_tui_text(item.project_id, maximum=128),
                     iteration_id=safe_tui_text(item.iteration_id, maximum=128),
                     repositories=(safe_tui_text(item.repo_name, maximum=128),),
@@ -445,6 +447,7 @@ class TuiController:
         project_id: str,
         iteration_id: str,
         repositories: tuple[WorkspaceRepositoryInput, ...],
+        *, display_name: str = "",
     ) -> WorkspaceSummary:
         """Persist one project/iteration workspace containing one or more repos."""
 
@@ -500,11 +503,15 @@ class TuiController:
                     raise ValueError
                 data = current.model_dump(mode="python", round_trip=True)
                 data["repository_groups"] = (*current.repository_groups, group)
+                if display_name:
+                    data["workspace_names"] = {**current.workspace_names, key: display_name}
                 candidate = DeveloperWorkflowConfig.model_validate(data)
                 saver(candidate)
                 current.repository_groups = candidate.repository_groups
+                current.workspace_names = candidate.workspace_names
                 return WorkspaceSummary(
                     key=safe_tui_text(group.key, maximum=128),
+                    display_name=candidate.workspace_names.get(group.key, ""),
                     project_id=safe_tui_text(group.project_id, maximum=128),
                     iteration_id=safe_tui_text(group.iteration_id, maximum=128),
                     repositories=tuple(
@@ -516,6 +523,25 @@ class TuiController:
             raise
         except Exception:
             raise TuiControllerError("workspace configuration could not be saved") from None
+
+    def rename_workspace(self, key: str, display_name: str) -> WorkspaceSummary:
+        """Persist display metadata without changing mapping or workflow identities."""
+        try:
+            display_name = validate_tui_input_text(display_name, maximum=128).strip()
+            if not display_name or self._workflow_saver is None:
+                raise ValueError()
+            with self._workspace_lock:
+                if not any(w.key == key for w in self.list_workspaces()):
+                    raise ValueError()
+                current = self._orchestrator.config
+                data = current.model_dump(mode="python", round_trip=True)
+                data["workspace_names"] = {**current.workspace_names, key: display_name}
+                candidate = DeveloperWorkflowConfig.model_validate(data)
+                self._workflow_saver(candidate)
+                current.workspace_names = candidate.workspace_names
+                return next(w for w in self.list_workspaces() if w.key == key)
+        except Exception:
+            raise TuiControllerError("工作区名称保存失败，请检查名称或配置权限") from None
 
     @serialized_mutation
     def delete_workspace(self, key: str) -> None:
@@ -537,9 +563,11 @@ class TuiController:
                 data["repository_groups"] = tuple(
                     item for item in current.repository_groups if item.key != key
                 )
+                data["workspace_names"] = {k: v for k, v in current.workspace_names.items() if k != key}
                 candidate = DeveloperWorkflowConfig.model_validate(data)
                 saver(candidate)
                 current.repository_groups = candidate.repository_groups
+                current.workspace_names = candidate.workspace_names
                 if self.schedule_store is not None:
                     for plan in self.schedule_store.list(key):
                         self.schedule_store.save(plan.model_copy(update={"enabled": False}),

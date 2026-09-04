@@ -143,8 +143,19 @@ class DeveloperWorkflowConfig(WorkflowModel):
     tui_max_concurrency: StrictInt = Field(default=3, ge=1, le=8)
     repositories: tuple[RepositoryMapping, ...] = Field(default_factory=tuple)
     repository_groups: tuple[RepositoryGroupMapping, ...] = Field(default_factory=tuple)
+    workspace_names: dict[str, str] = Field(default_factory=dict)
     publishing: PublishingConfig
     verification_nodes: tuple[VerificationNode, ...] = Field(default=(), max_length=64)
+
+    @field_validator("workspace_names")
+    @classmethod
+    def validate_workspace_names(cls, names: dict[str, str]) -> dict[str, str]:
+        for key, name in names.items():
+            if not re.fullmatch(r"[A-Za-z0-9._-]+", key) or key in {".", ".."}:
+                raise ValueError("invalid workspace identifier")
+            if not name.strip() or len(name) > 128 or any(ord(c) < 32 or ord(c) == 127 for c in name):
+                raise ValueError("invalid workspace display name")
+        return {key: name.strip() for key, name in names.items()}
 
     @field_validator("verification_nodes")
     @classmethod

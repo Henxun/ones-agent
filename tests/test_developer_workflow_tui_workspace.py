@@ -201,6 +201,48 @@ def test_controller_creates_and_persists_multi_repository_workspace(
     controller.close()
 
 
+def test_workspace_display_names_preserve_mapping_and_schedule_identity(tmp_path):
+    from src.developer_workflow.tui.controller import TuiController
+    from src.developer_workflow.tui.models import WorkspaceRepositoryInput
+    from src.developer_workflow.schedules import Schedule, ScheduleStore
+
+    config = _workflow_config(tmp_path)
+    saved = []
+    controller = TuiController(SimpleNamespace(config=config), object(), workflow_saver=saved.append)
+    workspace = controller.create_workspace("stable-id", "project-1", "iteration-1", (
+        WorkspaceRepositoryInput("repo", "repo", "https://example.test/repo.git", False),),
+        display_name="桌面端 回归 [测试]")
+    original_mapping = config.repository_groups[0].model_dump_json()
+    assert workspace.label == "桌面端 回归 [测试]"
+    assert workspace.key == "stable-id"
+    store = ScheduleStore(tmp_path / "plans")
+    controller.schedule_store = store
+    plan = store.save(Schedule(workspace=workspace.key, project="project-1", iteration="iteration-1",
+                               name="扫描", assignee="user", status_ids=("open",)), expected_version=None)
+    renamed = controller.rename_workspace(workspace.key, "新名称 生产环境")
+    assert renamed.key == workspace.key
+    assert renamed.label == "新名称 生产环境"
+    assert config.repository_groups[0].model_dump_json() == original_mapping
+    assert store.list() == (plan,)
+    reloaded = type(config).model_validate_json(saved[-1].model_dump_json())
+    assert reloaded.workspace_names == {"stable-id": "新名称 生产环境"}
+    from src.developer_workflow.setup_models import WorkflowDraft
+    draft = WorkflowDraft.model_validate(reloaded.model_dump(mode="python"))
+    assert draft.workspace_names == reloaded.workspace_names
+    for invalid in ("", "  ", "x" * 129, "name\nnewline"):
+        with pytest.raises(Exception):
+            controller.rename_workspace(workspace.key, invalid)
+    assert config.workspace_names == reloaded.workspace_names
+    controller._workflow_saver = lambda value: (_ for _ in ()).throw(OSError())
+    with pytest.raises(Exception):
+        controller.rename_workspace(workspace.key, "保存失败的名称")
+    assert config.workspace_names == reloaded.workspace_names
+    controller._workflow_saver = saved.append
+    controller.delete_workspace(workspace.key)
+    assert config.workspace_names == {}
+    controller.close()
+
+
 def test_local_workspace_repository_keeps_real_origin_as_repo_url(
     tmp_path: Path,
 ) -> None:
@@ -402,8 +444,9 @@ async def test_dashboard_creates_multi_repository_workspace_and_opens_detail() -
             assert project_id == "project-1"
             return (FilterChoice(id="iteration-1", name="Sprint 1"),)
 
-        def create_workspace(self, *args):
+        def create_workspace(self, *args, display_name=""):
             self.create_calls.append(args)
+            self.created_name = display_name
             self.workspaces = (created,)
             return created
 
@@ -445,7 +488,7 @@ async def test_dashboard_creates_multi_repository_workspace_and_opens_detail() -
         assert not screen.query_one("#workspace").display
         assert not screen.query("#nav-defects")
         assert screen.query_one("#workspace-empty").display
-        assert "Create workspace" in str(
+        assert "创建工作区" in str(
             screen.query_one("#workspace-empty").render()
         )
         await pilot.click("#create-workspace")
@@ -480,7 +523,8 @@ async def test_dashboard_creates_multi_repository_workspace_and_opens_detail() -
         assert not screen.query_one("#workspace-empty").display
         assert pilot.app.screen.workspace == created
         assert len(controller.create_calls) == 1
-        assert controller.create_calls[0][0] == "project-1-iteration-1"
+        assert controller.create_calls[0][0].startswith("workspace-")
+        assert controller.created_name == "project-1-iteration-1"
         repositories = controller.create_calls[0][3]
         assert len(repositories) == 2
         assert repositories[0].local is True

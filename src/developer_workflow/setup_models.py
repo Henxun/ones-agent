@@ -403,8 +403,14 @@ class WorkflowDraft(SetupModel):
     tui_max_concurrency: StrictInt = Field(default=3, ge=1, le=8)
     repositories: tuple[RepositoryMapping, ...] = Field(default_factory=tuple)
     repository_groups: tuple[RepositoryGroupMapping, ...] = Field(default_factory=tuple)
+    workspace_names: dict[str, str] = Field(default_factory=dict)
     publishing: PublishingConfig | None = None
     verification_nodes: tuple["VerificationNode", ...] = Field(default=())
+
+    @field_validator("workspace_names")
+    @classmethod
+    def validate_workspace_names(cls, names: dict[str, str]) -> dict[str, str]:
+        return DeveloperWorkflowConfig.validate_workspace_names(names)
 
     def __setattr__(self, name: str, value: Any) -> None:
         if name in {
