@@ -1109,7 +1109,7 @@ class TuiController:
             try:
                 check()
             except Exception:
-                raise PublicationConfigurationError("请先到 Configuration → 运行信息 → 配置 PR/MR 发布，设置平台令牌。") from None
+                raise PublicationConfigurationError("请先到 Configuration → GitHub / GitLab，设置平台令牌。") from None
 
     def _assert_request(self, request: DangerousActionRequest, action: str) -> None:
         if not isinstance(request, DangerousActionRequest) or request.action != action:

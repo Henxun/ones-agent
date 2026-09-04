@@ -16,6 +16,7 @@ from textual.widgets import Button
 
 from .controller import TuiController
 from ..setup_models import OnesProbePublicConfig
+from ..setup_controller import InlineValidationError
 from .models import RunActivity
 from .screens import DashboardScreen, HelpScreen, SettingsView
 from .runtime_session import TuiRuntimeSession
@@ -415,20 +416,25 @@ class DeveloperWorkflowTuiApp(App[None]):
             session.supervisor,
             self.settings,
             publishing_enabled=self._publishing_enabled,
+            initial_settings_tab=getattr(self, "_restore_settings_tab", None),
         )
 
     def _bind_runtime_session(self, session: TuiRuntimeSession) -> None:
         self.runtime_session = session
         self.controller = session.controller
         self.supervisor = session.supervisor
-        self._dashboard = self._build_dashboard(session)
+        if getattr(self, "_restore_settings_tab", None) and self._dashboard is not None:
+            self._dashboard.rebind_runtime(session.controller, session.supervisor)
+        else:
+            self._dashboard = self._build_dashboard(session)
 
     async def _mount_dashboard(self) -> None:
         self._discard_setup_import()
         dashboard = self._dashboard
         if dashboard is None:
             raise RuntimeError("TUI runtime is unavailable")
-        await self.push_screen(dashboard)
+        if not dashboard.is_attached:
+            await self.push_screen(dashboard)
         if self._ui_closed:
             raise _TransitionClosed
         refresh_workspaces = getattr(dashboard, "refresh_workspaces", None)
@@ -660,7 +666,21 @@ class DeveloperWorkflowTuiApp(App[None]):
             raise RuntimeError("workflow is active")
         await self._begin_reconfigure(inline_fields=fields, inline_credentials=credentials)
 
-    async def _begin_reconfigure(self, *, inline_fields=None, inline_credentials=None) -> None:
+    async def read_inline_provider(self) -> dict[str, str]:
+        controller = self._new_setup_controller()
+        try:
+            await asyncio.to_thread(controller.load_active_public_draft)
+            return {key: value for key, value in controller.runtime_public_fields.items()
+                    if key in {"provider", "provider_host", "provider_api_url", "git_author_name", "git_author_email"}}
+        finally:
+            await controller.aclose()
+
+    async def save_inline_provider(self, fields, credentials) -> None:
+        if self.runtime_session is None:
+            raise RuntimeError("editable runtime is unavailable")
+        await self._begin_reconfigure(inline_fields=fields, inline_credentials=credentials, inline_module="provider")
+
+    async def _begin_reconfigure(self, *, inline_fields=None, inline_credentials=None, inline_module="ones") -> None:
         """Close the stable runtime completely before constructing setup UI."""
 
         safe_exit = False
@@ -678,6 +698,8 @@ class DeveloperWorkflowTuiApp(App[None]):
             dashboard = self._dashboard
             if dashboard is not None:
                 dashboard.begin_teardown()
+                if inline_fields is not None:
+                    dashboard.disabled = True
             close_failed = False
             try:
                 await self.runtime_session.close()
@@ -701,7 +723,8 @@ class DeveloperWorkflowTuiApp(App[None]):
                 self._active_handle_identity = None
                 self.controller = None
                 self.supervisor = None
-                await self._remove_dashboard()
+                if inline_fields is None or safe_exit:
+                    await self._remove_dashboard()
                 self.activities.clear()
             if not safe_exit:
                 try:
@@ -712,20 +735,27 @@ class DeveloperWorkflowTuiApp(App[None]):
                     if inline_fields is None:
                         await self._show_setup()
                     else:
+                        failure_notice = "配置未应用，已恢复原配置；请检查必填项及连接后重试。"
                         try:
-                            await controller.prepare_inline_ones(inline_fields, inline_credentials or {})
+                            prepare = controller.prepare_inline_provider if inline_module == "provider" else controller.prepare_inline_ones
+                            await prepare(inline_fields, inline_credentials or {})
                             handle = await controller.save_and_activate()
                             saved = True
-                        except Exception:
+                        except Exception as error:
+                            if isinstance(error, InlineValidationError):
+                                failure_notice = "配置未应用，已恢复原配置。" + str(error)
                             handle = await controller.activate_existing()
                             saved = False
                         if handle is None:
+                            await self._remove_dashboard()
                             await self._show_setup()
                         else:
-                            await self._finish_setup(handle)
-                            if self._dashboard is not None:
-                                self._dashboard.action_show_settings()
-                            self.notify("ONES 配置已保存并应用" if saved else "配置未应用，已恢复原配置；请检查必填项及连接后重试。", severity="information" if saved else "warning")
+                            self._restore_settings_tab = "settings-provider" if inline_module == "provider" else "settings-ones"
+                            try:
+                                await self._finish_setup(handle)
+                            finally:
+                                self._restore_settings_tab = None
+                            self.notify("配置已保存并应用" if saved else failure_notice, severity="information" if saved else "warning", timeout=15)
                 except BaseException as error:
                     if isinstance(error, (KeyboardInterrupt, SystemExit)):
                         raise

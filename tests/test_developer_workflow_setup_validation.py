@@ -1955,7 +1955,7 @@ async def test_setup_validator_probes_are_read_only_and_private_paths_are_not_cr
         ProviderProbeInput(host="git.example.invalid", api_url="https://git.example.invalid/api")
     )
     assert provider_result.status is ValidationStatus.PASSED
-    assert provider.calls == [("GET", "https://git.example.invalid/api", 10.0)]
+    assert provider.calls == [("GET", "https://git.example.invalid/api/user", 10.0)]
 
     repo = tmp_path / "repo"
     repo.mkdir()

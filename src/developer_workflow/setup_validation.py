@@ -1454,7 +1454,7 @@ class SetupValidator:
             async with asyncio.timeout(self.timeout_seconds):
                 response = await _invoke(
                     self.provider_transport.get,
-                    probe.api_url,
+                    probe.api_url.rstrip("/") + "/user",
                     timeout=self.timeout_seconds,
                 )
             status = response if type(response) is int else getattr(response, "status_code", None)

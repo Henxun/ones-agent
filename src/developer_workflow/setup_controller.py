@@ -48,6 +48,19 @@ class SetupActionError(RuntimeError):
     """A fixed, non-sensitive setup action failure."""
 
 
+class InlineValidationError(SetupActionError):
+    """Only known categories and stage labels may reach the UI."""
+
+    def __init__(self, step: SetupStep, category: str) -> None:
+        stage = {SetupStep.ONES: "ONES", SetupStep.PROVIDER: "GitHub / GitLab"}.get(step, "运行配置")
+        reason = {"authentication": "认证失败：请检查令牌是否有效及账号权限",
+                  "tls": "TLS 证书校验失败：请检查证书信任链",
+                  "timeout": "连接超时", "unreachable": "服务不可达：请检查网络、域名与代理",
+                  "incompatible": "API 返回非成功状态：请检查 API 地址及反向代理",
+                  "invalid_field": "必填配置或凭据缺失"}.get(category, "校验未通过")
+        super().__init__(f"{stage}：{reason}。")
+
+
 class _ConfigurationChanged(RuntimeError):
     """Internal CAS failure without draft or credential details."""
 
@@ -847,13 +860,63 @@ class SetupController:
             for step in self.STEPS:
                 if step is SetupStep.REVIEW:
                     break
-                result = await self.test_step(step)
+                result = await self.test_step(step, self._inline_probe(step))
                 if result.status is not ValidationStatus.PASSED:
-                    raise SetupActionError("configuration validation failed")
+                    raise InlineValidationError(step, result.category)
             self.confirm_review()
         except BaseException:
             self._clear_transient_secrets()
             raise
+
+    async def prepare_inline_provider(
+        self, fields: Mapping[str, str], replacements: Mapping[SecretKind, str],
+    ) -> None:
+        """Edit the provider without exposing retained secrets to the form."""
+        if set(fields) != {"provider_host", "provider_api_url", "provider", "git_author_name", "git_author_email"}:
+            raise SetupActionError("provider configuration is invalid")
+        if not set(replacements) <= {SecretKind.PROVIDER_TOKEN}:
+            raise SetupActionError("provider credentials are invalid")
+        await asyncio.to_thread(self.load_active_public_draft)
+        document = await asyncio.to_thread(self._store.load_or_empty, profile_id=self._profile_id)
+        if document.active is None or document.activation_owner_generation is not None:
+            raise SetupActionError("active configuration is unavailable")
+        active = document.active.runtime
+        if ((fields["provider_host"] != active.provider_host or fields["provider_api_url"].rstrip("/") != active.provider_api_url.rstrip("/"))
+                and not replacements.get(SecretKind.PROVIDER_TOKEN)):
+            raise SetupActionError("a new provider endpoint requires explicit credentials")
+        retained = await asyncio.to_thread(self._store.read_active_secrets, document)
+        try:
+            for kind, value in retained.values.items():
+                self.set_secret(kind, value)
+            for kind, value in replacements.items():
+                if value:
+                    self.set_secret(kind, value)
+            self.apply_step_transaction(SetupStep.PROVIDER, SetupStepTransaction(runtime_fields=dict(fields)), expected_revision=self.revision)
+            workflow = self.draft.workflow.model_copy(deep=True)
+            publishing = workflow.publishing.model_dump(mode="python")
+            publishing["provider"] = fields["provider"]
+            workflow.publishing = type(workflow.publishing).model_validate(publishing)
+            self.apply_workflow(workflow, changed_step=SetupStep.PROVIDER)
+            for step in self.STEPS:
+                if step is SetupStep.REVIEW:
+                    break
+                result = await self.test_step(step, self._inline_probe(step))
+                if result.status is not ValidationStatus.PASSED:
+                    raise InlineValidationError(step, result.category)
+            self.confirm_review()
+        except BaseException:
+            self._clear_transient_secrets()
+            raise
+
+    def _inline_probe(self, step: SetupStep) -> object | None:
+        """Build the same typed connection inputs as the setup wizard."""
+        if step is SetupStep.ONES:
+            return OnesProbeInput(team_id=self._runtime_fields["ones_team_id"],
+                                  issue_type_id=self._runtime_fields["ones_issue_type_id"] or None)
+        if step is SetupStep.PROVIDER:
+            return ProviderProbeInput(host=self._runtime_fields["provider_host"],
+                                      api_url=self._runtime_fields["provider_api_url"])
+        return None
 
     async def list_orphan_generations(self) -> tuple[str, ...]:
         self._ensure_open()

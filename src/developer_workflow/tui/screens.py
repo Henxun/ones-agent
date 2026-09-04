@@ -66,6 +66,7 @@ from .supervisor import RunTaskSupervisor
 from .verification_modal import VerificationModal, VerificationSubmission
 from .verification_settings import VerificationNodesPane
 from .ones_settings import OnesSettingsPane
+from .provider_settings import ProviderSettingsPane
 from . import detail_rendering
 from ..verification import public_text
 
@@ -2345,8 +2346,10 @@ class DashboardScreen(Screen[None]):
         settings: SettingsView,
         *,
         publishing_enabled: bool = True,
+        initial_settings_tab: str | None = None,
     ) -> None:
         super().__init__(id="dashboard-screen")
+        self._initial_settings_tab = initial_settings_tab
         if type(publishing_enabled) is not bool:
             raise ValueError("publishing capability is invalid")
         self._controller = controller
@@ -2408,15 +2411,13 @@ class DashboardScreen(Screen[None]):
                 with TabbedContent(initial="settings-ones", id="configuration-tabs"):
                     with TabPane("ONES 配置", id="settings-ones"):
                         yield OnesSettingsPane()
+                    with TabPane("GitHub / GitLab", id="settings-provider"):
+                        yield ProviderSettingsPane()
                     with TabPane("验证节点", id="settings-nodes"):
                         yield VerificationNodesPane(self._controller, self._supervisor)
                     with TabPane("运行信息", id="settings-runtime"):
                         with VerticalScroll():
                             yield Static(Text(self._settings.display_text()), id="settings", markup=False)
-                            yield Static("PR/MR 发布配置：设置 GitHub/GitLab、API 地址、令牌及提交身份。"
-                                         "TUI 提交和推送使用本机 Git 配置（身份、凭据助手、SSH）；"
-                                         "平台令牌仅用于 PR/MR API。保存后仍须逐项审批。")
-                            yield Button("配置 PR/MR 发布", id="configure-runtime", variant="primary")
         yield Static("", id="notice", markup=False)
 
     def on_mount(self) -> None:
@@ -2428,6 +2429,9 @@ class DashboardScreen(Screen[None]):
         self.query_one("#workspace").display = not self._workspace_mode
         self.query_one("#settings-page").display = False
         self._set_analysis_actions(None)
+        if self._initial_settings_tab is not None:
+            self.query_one("#configuration-tabs", TabbedContent).active = self._initial_settings_tab
+            self.action_show_settings()
 
     def _set_analysis_actions(self, detail: RunDetail | None) -> None:
         self._selected_detail = detail
@@ -2735,8 +2739,21 @@ class DashboardScreen(Screen[None]):
 
     def _step_configuration_tab(self, step: int) -> None:
         tabs = self.query_one("#configuration-tabs", TabbedContent)
-        names = ("settings-ones", "settings-nodes", "settings-runtime")
+        names = ("settings-ones", "settings-provider", "settings-nodes", "settings-runtime")
         tabs.active = names[(names.index(tabs.active) + step) % len(names)]
+
+    def rebind_runtime(self, controller: TuiController, supervisor: RunTaskSupervisor) -> None:
+        """Keep the mounted configuration shell while replacing closed runtime owners."""
+        self._controller = controller
+        self._supervisor = supervisor
+        self._mount_generation += 1
+        self._teardown_started = False
+        self._lifecycle_active = True
+        nodes = self.query_one(VerificationNodesPane)
+        nodes.controller = controller
+        nodes.supervisor = supervisor
+        nodes.loaded = False
+        self.disabled = False
 
     def action_show_settings(self) -> None:
         self.query_one("#workspace-home").display = False
@@ -2745,6 +2762,7 @@ class DashboardScreen(Screen[None]):
         self.query_one("#action-bar").display = False
         self._set_active_navigation("nav-settings")
         self.run_worker(self.query_one(OnesSettingsPane).load())
+        self.run_worker(self.query_one(ProviderSettingsPane).load())
         if self.query_one("#configuration-tabs", TabbedContent).active == "settings-nodes":
             self.run_worker(self.query_one(VerificationNodesPane).load_nodes())
 

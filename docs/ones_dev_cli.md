@@ -97,7 +97,8 @@ run 的 mutation 始终 FIFO 串行，底层 operation lock 和 version CAS 仍�
 只从 `FileRunStore` 恢复。异常退出后可先查看详情，再使用 `r` 从允许的检查点继续。
 
 TUI 已开放人工审批后的 commit、push 和 Draft PR/MR。已有安装可从
-Configuration → 运行信息 → 配置 PR/MR 发布进入向导，配置平台、API、令牌及提交身份。
+Configuration → GitHub / GitLab 直接编辑平台、API、令牌及备用提交身份，无需打开配置向导。
+令牌不回显，留空保留；更换服务端点必须重新填写令牌。保存会校验并重建运行环境，失败时恢复原配置。
 没有平台令牌时，审批入口提示先配置，不会先提交或推送。启用能力不代表批准当前任务。
 
 TUI 使用本机 Git 全局/系统配置及凭据助手、SSH 配置/agent，提交身份取本机 user.name/user.email。
