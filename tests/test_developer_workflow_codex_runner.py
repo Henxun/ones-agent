@@ -1011,7 +1011,10 @@ def test_read_only_review_uses_verified_diff_without_losing_negative_findings(tm
         return runner.run(_prepared(tmp_path), _mapping(tmp_path), run_id="readonly-review", prompt="review", allow_changes=False)
 
     if mutates:
-        with pytest.raises(UnsafeCodexRunError, match="read-only Codex stage modified"):
+        with pytest.raises(
+            UnsafeCodexRunError,
+            match="read-only coding-agent stage modified",
+        ):
             review()
     else:
         result = review()

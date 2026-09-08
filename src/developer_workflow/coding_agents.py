@@ -8,6 +8,20 @@ import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
+
+
+CodingAgentKey = Literal["codex", "claude"]
+
+
+@dataclass(frozen=True, slots=True)
+class CodingAgentDefinition:
+    """Static capability metadata; runtime construction remains adapter-owned."""
+
+    key: str
+    label: str
+    command: str
+    supported: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,13 +35,23 @@ class CodingAgentInstallation:
     detail: str = ""
 
 
-_AGENTS = (
-    ("codex", "Codex", "codex", True),
-    ("claude", "Claude Code", "claude", True),
-    ("gemini", "Gemini CLI", "gemini", False),
-    ("aider", "Aider", "aider", False),
-    ("cursor-agent", "Cursor Agent", "cursor-agent", False),
+CODING_AGENT_CATALOG = (
+    CodingAgentDefinition("codex", "Codex", "codex", True),
+    CodingAgentDefinition("claude", "Claude Code", "claude", True),
+    CodingAgentDefinition("gemini", "Gemini CLI", "gemini", False),
+    CodingAgentDefinition("aider", "Aider", "aider", False),
+    CodingAgentDefinition("cursor-agent", "Cursor Agent", "cursor-agent", False),
 )
+SUPPORTED_CODING_AGENT_KEYS = frozenset(
+    item.key for item in CODING_AGENT_CATALOG if item.supported
+)
+
+
+def coding_agent_definition(key: str) -> CodingAgentDefinition:
+    for item in CODING_AGENT_CATALOG:
+        if item.key == key:
+            return item
+    raise ValueError("unknown coding agent")
 
 
 def _canonical_executable(raw: str) -> Path | None:
@@ -54,16 +78,19 @@ def discover_coding_agents(
     """Return a stable catalog; discovery never launches an installed program."""
 
     found: list[CodingAgentInstallation] = []
-    for key, label, command, supported in _AGENTS:
-        raw = which(command)
+    for definition in CODING_AGENT_CATALOG:
+        key = definition.key
+        raw = which(definition.command)
         executable = _canonical_executable(raw) if raw else None
         installed = raw is not None
         # Codex has its own signed-runtime staging layer, which safely resolves
         # common npm wrappers to the native binary at execution time.
-        usable = supported and (executable is not None or (key == "codex" and installed))
+        usable = definition.supported and (
+            executable is not None or (key == "codex" and installed)
+        )
         if not installed:
             detail = "未安装或不在 PATH 中"
-        elif not supported:
+        elif not definition.supported:
             detail = "已检测，执行协议尚未接入"
         elif executable is None and key != "codex":
             detail = "已检测到命令包装脚本；当前仅支持原生可执行文件"
@@ -74,9 +101,9 @@ def discover_coding_agents(
         found.append(
             CodingAgentInstallation(
                 key=key,
-                label=label,
+                label=definition.label,
                 installed=installed,
-                supported=supported,
+                supported=definition.supported,
                 usable=usable,
                 executable=executable or (Path(raw).resolve(strict=False) if raw else None),
                 detail=detail,
@@ -93,7 +120,12 @@ def resolve_coding_agent_executable(key: str) -> Path:
 
 
 __all__ = [
+    "CODING_AGENT_CATALOG",
+    "SUPPORTED_CODING_AGENT_KEYS",
+    "CodingAgentDefinition",
     "CodingAgentInstallation",
+    "CodingAgentKey",
+    "coding_agent_definition",
     "discover_coding_agents",
     "resolve_coding_agent_executable",
 ]

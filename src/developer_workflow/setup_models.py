@@ -29,6 +29,7 @@ from .config import (
     SandboxPermissionProfileSource,
     _profile_source_validation_error,
 )
+from .coding_agents import CodingAgentKey
 from .contracts import RepositoryGroupMapping, RepositoryMapping, WorkflowModel
 from .verification_models import VerificationNode
 
@@ -262,7 +263,7 @@ class RuntimePublicConfig(SetupModel):
     git_author_email: StrictStr
     codex_auth_mode: Literal["credential", "file"]
     codex_home: Path | None = None
-    coding_agent: Literal["codex", "claude"] = "codex"
+    coding_agent: CodingAgentKey = "codex"
 
     @field_validator(
         "ones_team_id",

@@ -37,12 +37,11 @@ from .approval import ApprovalValidationError, validate_for_approval
 from .command_utils import CommandArgvError, parse_command_argv
 from .codex_runner import (
     CodexCommand,
-    CodexOutputError,
-    CodexRunner,
     CommandExecutor,
     _bounded_subprocess,
     resolve_codex_command,
 )
+from .coding_agent_runner import CodingAgentOutputError, CodingAgentRunner
 from .codex_runtime import CodexRuntimePreparer
 from .config import (
     BUILTIN_WORKSPACE_OVERRIDE,
@@ -167,7 +166,7 @@ class PreflightAnalyzer(Protocol):
     ) -> CodexResult: ...
 
 
-class RequirementCodex(PreflightAnalyzer, Protocol):
+class RequirementCodingAgent(PreflightAnalyzer, Protocol):
     def analyze_testing(self, *, run_id: str, prompt: str) -> CodexResult: ...
 
     def run_stage(
@@ -191,6 +190,10 @@ class RequirementCodex(PreflightAnalyzer, Protocol):
         prompt: str,
         allow_changes: bool,
     ) -> CodexResult: ...
+
+
+# Compatibility alias for existing integrations and persisted documentation.
+RequirementCodex = RequirementCodingAgent
 
 
 class ConfiguredTestRunner(Protocol):
@@ -303,13 +306,13 @@ def _sandbox_wrapped_arguments(
 
 
 @dataclass(slots=True)
-class CodexRequirementAdapter:
-    """Production bridge from requirement phases to the bounded Task 6 runner."""
+class CodingAgentRequirementAdapter:
+    """Provider-neutral bridge from requirement phases to a guarded runner."""
 
-    runner: CodexRunner
+    runner: CodingAgentRunner
 
     def _normalize_root_cause_result(
-        self, run_id: str, error: CodexOutputError
+        self, run_id: str, error: CodingAgentOutputError
     ) -> CodexResult:
         """Normalize one completed analysis without re-running repository work."""
 
@@ -368,11 +371,11 @@ class CodexRequirementAdapter:
             "root_cause",
             "reproduction",
         }:
-            raise RequirementFlowError("unknown Codex requirement stage")
+            raise RequirementFlowError("unknown coding-agent requirement stage")
         if stage in {"review", "root_cause", "testing"} and allow_changes:
-            raise RequirementFlowError("read-only Codex stage cannot modify files")
+            raise RequirementFlowError("read-only coding-agent stage cannot modify files")
         if stage in {"implementation", "reproduction"} and not allow_changes:
-            raise RequirementFlowError("mutable Codex stage requires the worktree sandbox")
+            raise RequirementFlowError("mutable coding-agent stage requires the worktree sandbox")
         run_root_cause = getattr(self.runner, "run_root_cause", None)
         operation = (
             run_root_cause
@@ -397,7 +400,7 @@ class CodexRequirementAdapter:
                 prompt=prompt,
                 allow_changes=allow_changes,
             )
-        except CodexOutputError as error:
+        except CodingAgentOutputError as error:
             if stage != "root_cause":
                 raise
             return self._normalize_root_cause_result(run_id, error)
@@ -418,11 +421,11 @@ class CodexRequirementAdapter:
         if stage not in {
             "implementation", "testing", "review", "root_cause", "reproduction"
         }:
-            raise RequirementFlowError("unknown Codex repository-group stage")
+            raise RequirementFlowError("unknown coding-agent repository-group stage")
         if stage in {"review", "root_cause", "testing"} and allow_changes:
-            raise RequirementFlowError("read-only Codex stage cannot modify files")
+            raise RequirementFlowError("read-only coding-agent stage cannot modify files")
         if stage in {"implementation", "reproduction"} and not allow_changes:
-            raise RequirementFlowError("mutable Codex stage requires the workspace sandbox")
+            raise RequirementFlowError("mutable coding-agent stage requires the workspace sandbox")
         run_group_root_cause = getattr(self.runner, "run_group_root_cause", None)
         operation = (
             run_group_root_cause
@@ -447,7 +450,7 @@ class CodexRequirementAdapter:
                 prompt=prompt,
                 allow_changes=allow_changes,
             )
-        except CodexOutputError as error:
+        except CodingAgentOutputError as error:
             if stage != "root_cause":
                 raise
             return self._normalize_root_cause_result(run_id, error)
@@ -505,6 +508,11 @@ _SandboxDirectoryIdentity = tuple[int, int, int, int]
 
 _POSIX_SANDBOX_CLEANUP_MAX_DEPTH = 64
 _POSIX_SANDBOX_CLEANUP_MAX_ENTRIES = 10_000
+
+
+# Backward-compatible export for integrations compiled against the original
+# provider-specific name.
+CodexRequirementAdapter = CodingAgentRequirementAdapter
 
 
 class _SandboxByHandleFileInformation(ctypes.Structure):
@@ -1594,7 +1602,7 @@ class RequirementFlow:
     gateway: RequirementGateway
     config: DeveloperWorkflowConfig
     repository: RequirementRepository
-    codex: RequirementCodex
+    codex: RequirementCodingAgent
     test_runner: ConfiguredTestRunner
     group_workspace: RepositoryGroupWorkspace | None = None
 
@@ -2841,10 +2849,10 @@ def _split_configured_command(command: str) -> list[str]:
 
 __all__ = [
     "ConfiguredTestRunner",
-    "CodexRequirementAdapter",
+    "CodingAgentRequirementAdapter", "CodexRequirementAdapter",
     "DirectConfiguredTestRunner",
     "PreflightAnalyzer",
-    "RequirementCodex",
+    "RequirementCodingAgent", "RequirementCodex",
     "RequirementFlow",
     "RequirementFlowError",
     "RequirementGateway",

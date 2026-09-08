@@ -21,12 +21,12 @@ from src.contracts import DefectRecord
 
 from .approval import ApprovalValidationError, collect_defect_risks, validate_for_approval
 from .command_utils import display_argv, parse_command_argv
-from .codex_runner import (
-    CodexExecutionError,
-    CodexOutputError,
-    CodexProcessStartError,
-    CodexTimeoutError,
-    UnsafeCodexRunError,
+from .coding_agent_runner import (
+    CodingAgentExecutionError,
+    CodingAgentOutputError,
+    CodingAgentProcessStartError,
+    CodingAgentTimeoutError,
+    UnsafeCodingAgentRunError,
 )
 from .config import DeveloperWorkflowConfig
 from .contracts import (
@@ -69,7 +69,11 @@ from .repository import (
     _open_readonly_nofollow,
     build_run_branch_name,
 )
-from .requirement_flow import ConfiguredTestRunner, RequirementCodex, _split_configured_command
+from .requirement_flow import (
+    ConfiguredTestRunner,
+    RequirementCodingAgent,
+    _split_configured_command,
+)
 from .state_store import ConcurrentRunUpdateError
 from .test_evidence import (
     FinalTestEvidenceError,
@@ -604,7 +608,7 @@ _INTERRUPTED_REPAIR_REASONS = {
 }
 
 
-def _is_recoverable_structure_error(error: CodexOutputError) -> bool:
+def _is_recoverable_structure_error(error: CodingAgentOutputError) -> bool:
     """Allow snapshot recovery only for an ordinary final-result shape failure."""
 
     if (
@@ -1020,19 +1024,19 @@ class _FlowBlocked(Exception):
 def _safe_unexpected_block(error: Exception, state: WorkflowState) -> _Blocked:
     """Convert known runtime failures to useful messages without leaking details."""
 
-    if isinstance(error, CodexProcessStartError):
+    if isinstance(error, CodingAgentProcessStartError):
         reason = "Codex process could not be started"
-    elif isinstance(error, CodexTimeoutError):
+    elif isinstance(error, CodingAgentTimeoutError):
         reason = "Codex analysis timed out"
-    elif isinstance(error, CodexOutputError):
+    elif isinstance(error, CodingAgentOutputError):
         reason = (
             "Codex result format repair failed"
             if str(error) == "Codex result format repair failed"
             else "Codex analysis returned invalid structured output"
         )
-    elif isinstance(error, UnsafeCodexRunError):
+    elif isinstance(error, UnsafeCodingAgentRunError):
         reason = "Codex runtime safety validation failed"
-    elif isinstance(error, CodexExecutionError):
+    elif isinstance(error, CodingAgentExecutionError):
         reason = "Codex analysis exited unsuccessfully"
     elif isinstance(error, RemoteBaseChangedError):
         reason = "remote target branch changed since baseline"
@@ -1052,7 +1056,7 @@ class DefectFlow:
     store: DefectRunStore
     config: DeveloperWorkflowConfig
     repository: DefectRepository
-    codex: RequirementCodex
+    codex: RequirementCodingAgent
     test_runner: ConfiguredTestRunner
     group_workspace: RepositoryGroupWorkspace | None = None
 
@@ -1557,7 +1561,7 @@ class DefectFlow:
                     prompt=self._reproduction_prompt(current),
                     allow_changes=True,
                 )
-            except CodexOutputError as error:
+            except CodingAgentOutputError as error:
                 if not _is_recoverable_structure_error(error):
                     raise
                 recovered = self._verified_snapshot(prepared, mapping)
@@ -1700,7 +1704,7 @@ class DefectFlow:
                     prompt=self._repair_prompt(current),
                     allow_changes=True,
                 )
-            except CodexOutputError as error:
+            except CodingAgentOutputError as error:
                 if not _is_recoverable_structure_error(error):
                     raise
                 recovered = self._verified_snapshot(prepared, mapping)
@@ -2212,7 +2216,7 @@ class DefectFlow:
                     run_id=current.run_id, prompt=self._reproduction_prompt(current),
                     allow_changes=True,
                 )
-            except CodexOutputError as error:
+            except CodingAgentOutputError as error:
                 if not _is_recoverable_structure_error(error):
                     raise
                 recovered = workspace.snapshots(prepared)
@@ -2303,7 +2307,7 @@ class DefectFlow:
                         run_id=current.run_id, prompt=self._repair_prompt(current),
                         allow_changes=True,
                     )
-                except CodexOutputError as error:
+                except CodingAgentOutputError as error:
                     if not _is_recoverable_structure_error(error):
                         raise
                     recovered = workspace.snapshots(prepared)
@@ -3384,7 +3388,7 @@ class DefectFlow:
             try:
                 result = self.codex.run_group_stage("reproduction", group=run.repository_group, prepared=contexts,
                                                    run_id=run.run_id, prompt=prompt, allow_changes=True)
-            except CodexOutputError as error:
+            except CodingAgentOutputError as error:
                 if not _is_recoverable_structure_error(error):
                     raise
                 snapshots = self._group_workspace().snapshots(contexts)
@@ -3401,7 +3405,7 @@ class DefectFlow:
             try:
                 result = self.codex.run_stage("reproduction", prepared=prepared, mapping=self._mapping(run),
                                              run_id=run.run_id, prompt=prompt, allow_changes=True)
-            except CodexOutputError as error:
+            except CodingAgentOutputError as error:
                 if not _is_recoverable_structure_error(error):
                     raise
                 result = CodexResult(

@@ -21,6 +21,7 @@ from src.services.ones_gateway import OnesGateway
 from .approval_rebuilder import WorkflowApprovalRebuilder
 from .codex_runner import (
     CodexRunner,
+    GuardedCodingAgentRunner,
     resolve_codex_command,
     validate_codex_auth_source,
 )
@@ -40,7 +41,7 @@ from .publisher import Publisher
 from .repository import WorktreeRepository, validate_git_identity_environment
 from .repository_group import RepositoryGroupWorkspace
 from .requirement_flow import (
-    CodexRequirementAdapter,
+    CodingAgentRequirementAdapter,
     RequirementFlow,
     SandboxCommandExecutor,
     sandbox_preflight_command,
@@ -117,6 +118,8 @@ class RuntimeAdapterBundle:
     """Explicit test/deployment adapters; ``None`` preserves production defaults."""
 
     gateway_factory: Callable[..., object] | None = None
+    coding_agent_factory: Callable[..., object] | None = None
+    # Deprecated compatibility seam for Codex-only test/deployment adapters.
     codex_factory: Callable[..., object] | None = None
     repository_factory: Callable[..., object] | None = None
     sandbox_factory: SandboxFactory | None = None
@@ -538,15 +541,16 @@ class RuntimeBootstrapper:
                 else self.adapters.gateway_factory(settings)
             )
             environment_provider = lambda: dict(agent_environment)
-            if public.coding_agent == "claude":
-                codex_backend = ClaudeRunner(
+            def build_claude() -> GuardedCodingAgentRunner:
+                return ClaudeRunner(
                     run_root,
                     repository,
                     environment_provider=environment_provider,
                     sandbox_mode_override="danger-full-access",
                 )
-            else:
-                codex_backend = (
+
+            def build_codex() -> object:
+                return (
                     CodexRunner(
                         run_root,
                         repository,
@@ -560,10 +564,27 @@ class RuntimeBootstrapper:
                         run_root, repository, environment_provider
                     )
                 )
+
+            agent_builders = {
+                "codex": build_codex,
+                "claude": build_claude,
+            }
+            if self.adapters.coding_agent_factory is not None:
+                coding_agent_backend = self.adapters.coding_agent_factory(
+                    public.coding_agent,
+                    run_root,
+                    repository,
+                    environment_provider,
+                )
+            else:
+                try:
+                    coding_agent_backend = agent_builders[public.coding_agent]()
+                except KeyError:
+                    raise ValueError("unsupported coding agent") from None
             codex = (
-                CodexRequirementAdapter(codex_backend)
-                if isinstance(codex_backend, CodexRunner)
-                else codex_backend
+                CodingAgentRequirementAdapter(coding_agent_backend)
+                if isinstance(coding_agent_backend, GuardedCodingAgentRunner)
+                else coding_agent_backend
             )
             test_runner = (
                 SandboxCommandExecutor(

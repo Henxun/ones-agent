@@ -17,6 +17,7 @@ from .config import (
     SandboxPermissionProfileSource,
 )
 from .contracts import RepositoryGroupMapping, RepositoryMapping
+from .coding_agents import SUPPORTED_CODING_AGENT_KEYS
 from .setup_import import ImportDetection, import_selected
 from .setup_models import (
     ActiveSetup,
@@ -912,7 +913,7 @@ class SetupController:
 
     async def prepare_inline_coding_agent(self, coding_agent: str) -> None:
         """Select a supported local coding backend without exposing secrets."""
-        if coding_agent not in {"codex", "claude"}:
+        if coding_agent not in SUPPORTED_CODING_AGENT_KEYS:
             raise SetupActionError("coding agent configuration is invalid")
         await asyncio.to_thread(self.load_active_public_draft)
         document = await asyncio.to_thread(

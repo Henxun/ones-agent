@@ -8,8 +8,19 @@ from unittest.mock import AsyncMock
 from textual.widgets import Button, Select, TabbedContent
 
 from src.developer_workflow.claude_runner import ClaudeRunner
+from src.developer_workflow.codex_runner import (
+    CodexOutputError,
+    CodexRunner,
+    GuardedCodingAgentRunner,
+)
+from src.developer_workflow.coding_agent_runner import (
+    CodingAgentOutputError,
+    CodingAgentRunner,
+)
 from src.developer_workflow.coding_agents import (
+    SUPPORTED_CODING_AGENT_KEYS,
     CodingAgentInstallation,
+    coding_agent_definition,
     discover_coding_agents,
 )
 from src.developer_workflow.tui.app import DeveloperWorkflowTuiApp
@@ -39,6 +50,25 @@ def test_legacy_runtime_config_defaults_to_codex() -> None:
     from test_developer_workflow_setup_models import _public_config
 
     assert _public_config().coding_agent == "codex"
+
+
+def test_runner_abstraction_is_provider_neutral_and_backwards_compatible(
+    tmp_path: Path,
+) -> None:
+    codex = CodexRunner(tmp_path.resolve(), object())
+    claude = ClaudeRunner(tmp_path.resolve(), object())
+
+    assert isinstance(codex, GuardedCodingAgentRunner)
+    assert isinstance(claude, GuardedCodingAgentRunner)
+    assert isinstance(codex, CodingAgentRunner)
+    assert isinstance(claude, CodingAgentRunner)
+    assert not isinstance(claude, CodexRunner)
+    assert CodexOutputError is CodingAgentOutputError
+
+
+def test_supported_agent_registry_owns_selection_keys() -> None:
+    assert SUPPORTED_CODING_AGENT_KEYS == {"codex", "claude"}
+    assert coding_agent_definition("claude").command == "claude"
 
 
 async def test_inline_agent_selection_preserves_existing_configuration(tmp_path: Path) -> None:

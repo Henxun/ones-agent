@@ -12,16 +12,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .codex_runner import (
-    CodexExecutionError,
-    CodexOutputError,
-    CodexRunner,
-    CodexRunnerError,
-    CodexTimeoutError,
-    UnsafeCodexRunError,
+    GuardedCodingAgentRunner,
     _RUN_ID,
     _bounded_subprocess,
     _is_positive_finite_number,
     _is_reparse_or_link,
+)
+from .coding_agent_runner import (
+    CodingAgentExecutionError,
+    CodingAgentOutputError,
+    CodingAgentRunnerError,
+    CodingAgentTimeoutError,
+    UnsafeCodingAgentRunError,
 )
 from .coding_agents import resolve_coding_agent_executable
 
@@ -52,8 +54,8 @@ def safe_claude_environment(source: Mapping[str, str]) -> dict[str, str]:
 
 
 @dataclass(slots=True)
-class ClaudeRunner(CodexRunner):
-    """Reuse CodexRunner's schema, repository and evidence validation layers."""
+class ClaudeRunner(GuardedCodingAgentRunner):
+    """Claude Code transport over the shared guarded runner."""
 
     claude_command_resolver: Callable[[], Path] = field(
         default=lambda: resolve_coding_agent_executable("claude"), repr=False
@@ -66,7 +68,7 @@ class ClaudeRunner(CodexRunner):
 
     def _session_path(self, run_id: str) -> Path:
         if not _RUN_ID.fullmatch(run_id) or run_id in {".", ".."}:
-            raise UnsafeCodexRunError("run_id is not a safe path segment")
+            raise UnsafeCodingAgentRunError("run_id is not a safe path segment")
         return self._prepare_run_directory(run_id) / ".claude-session-id"
 
     def _read_session_id(self, run_id: str) -> str | None:
@@ -78,19 +80,19 @@ class ClaudeRunner(CodexRunner):
                 or not stat.S_ISREG(metadata.st_mode)
                 or not 8 <= metadata.st_size <= 129
             ):
-                raise UnsafeCodexRunError("Claude session state is unsafe")
+                raise UnsafeCodingAgentRunError("Claude session state is unsafe")
             value = path.read_text(encoding="ascii", errors="strict").strip()
             if _CLAUDE_SESSION_ID.fullmatch(value) is None:
-                raise UnsafeCodexRunError("Claude session state is unsafe")
+                raise UnsafeCodingAgentRunError("Claude session state is unsafe")
             return value
         except FileNotFoundError:
             return None
         except (OSError, UnicodeError) as error:
-            raise UnsafeCodexRunError("Claude session state is unsafe") from error
+            raise UnsafeCodingAgentRunError("Claude session state is unsafe") from error
 
     def _store_session_id(self, run_id: str, session_id: str) -> None:
         if _CLAUDE_SESSION_ID.fullmatch(session_id) is None:
-            raise UnsafeCodexRunError("Claude returned an invalid session id")
+            raise UnsafeCodingAgentRunError("Claude returned an invalid session id")
         self._write_prompt(
             self._session_path(run_id), (session_id + "\n").encode("ascii", "strict")
         )
@@ -108,23 +110,23 @@ class ClaudeRunner(CodexRunner):
         output_schema: Path,
     ) -> tuple[str, tuple[str, ...]]:
         if not _RUN_ID.fullmatch(run_id) or run_id in {".", ".."}:
-            raise UnsafeCodexRunError("run_id is not a safe path segment")
+            raise UnsafeCodingAgentRunError("run_id is not a safe path segment")
         if not _is_positive_finite_number(timeout_seconds):
-            raise UnsafeCodexRunError("timeout must be finite and positive")
+            raise UnsafeCodingAgentRunError("timeout must be finite and positive")
         if sandbox not in {"workspace-write", "read-only", "danger-full-access"}:
-            raise UnsafeCodexRunError("Claude permission mode is invalid")
+            raise UnsafeCodingAgentRunError("Claude permission mode is invalid")
         if type(skip_git_repo_check) is not bool:
-            raise UnsafeCodexRunError("Claude Git repository policy is invalid")
+            raise UnsafeCodingAgentRunError("Claude Git repository policy is invalid")
         if type(additional_directories) is not tuple or any(
             not isinstance(path, Path) or not path.is_absolute()
             for path in additional_directories
         ):
-            raise UnsafeCodexRunError("Claude additional directories are invalid")
+            raise UnsafeCodingAgentRunError("Claude additional directories are invalid")
         if output_schema not in {self.schema_path, self.root_cause_schema_path}:
-            raise UnsafeCodexRunError("Claude output schema selection is invalid")
+            raise UnsafeCodingAgentRunError("Claude output schema selection is invalid")
         prompt_bytes = prompt.encode("utf-8", "strict")
         if not prompt.strip() or len(prompt_bytes) > self.max_prompt_bytes or "\x00" in prompt:
-            raise UnsafeCodexRunError("prompt is empty, invalid, or exceeds its size limit")
+            raise UnsafeCodingAgentRunError("prompt is empty, invalid, or exceeds its size limit")
         try:
             source = self.environment_provider()
             if not isinstance(source, Mapping) or any(
@@ -153,7 +155,7 @@ class ClaudeRunner(CodexRunner):
         except BaseException as error:
             if isinstance(error, (KeyboardInterrupt, SystemExit, GeneratorExit)):
                 raise
-            raise UnsafeCodexRunError("Claude runtime is unavailable") from None
+            raise UnsafeCodingAgentRunError("Claude runtime is unavailable") from None
         run_directory = self._prepare_run_directory(run_id)
         self._write_prompt(run_directory / "claude-prompt.txt", prompt_bytes)
         self._record_activity(run_directory, "prepare", "Preparing Claude Code runtime")
@@ -178,15 +180,15 @@ class ClaudeRunner(CodexRunner):
                 stdin=prompt_bytes,
             )
         except subprocess.TimeoutExpired as error:
-            raise CodexTimeoutError("Claude execution timed out") from error
-        except CodexRunnerError:
+            raise CodingAgentTimeoutError("Claude execution timed out") from error
+        except CodingAgentRunnerError:
             raise
         except Exception as error:
-            raise CodexExecutionError("Claude process could not be executed") from error
+            raise CodingAgentExecutionError("Claude process could not be executed") from error
         if completed.returncode != 0:
-            raise CodexExecutionError("Claude exited unsuccessfully")
+            raise CodingAgentExecutionError("Claude exited unsuccessfully")
         if not isinstance(completed.stdout, str) or not isinstance(completed.stderr, str):
-            raise CodexOutputError("Claude returned invalid structured output")
+            raise CodingAgentOutputError("Claude returned invalid structured output")
         try:
             if len(completed.stdout.encode("utf-8")) + len(completed.stderr.encode("utf-8")) > self.max_output_bytes:
                 raise ValueError
@@ -206,7 +208,7 @@ class ClaudeRunner(CodexRunner):
                 self._store_session_id(run_id, envelope["session_id"])
             output = json.dumps(envelope["structured_output"], ensure_ascii=False)
         except (UnicodeError, ValueError, TypeError, json.JSONDecodeError) as error:
-            raise CodexOutputError("Claude returned invalid structured output") from error
+            raise CodingAgentOutputError("Claude returned invalid structured output") from error
         self._record_activity(run_directory, "analysis", "Claude Code analysis completed")
         return output, ()
 

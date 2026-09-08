@@ -104,6 +104,7 @@ def test_runtime_adapter_bundle_is_explicit_and_defaults_remain_production() -> 
 
     bundle = RuntimeAdapterBundle()
     assert bundle.gateway_factory is None
+    assert bundle.coding_agent_factory is None
     assert bundle.codex_factory is None
     assert bundle.repository_factory is None
     assert bundle.sandbox_factory is None

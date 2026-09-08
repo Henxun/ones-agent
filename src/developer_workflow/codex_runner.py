@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from abc import ABC, abstractmethod
 import json
 import hmac
 import math
@@ -33,6 +34,14 @@ from .codex_runtime import (
     _PreparedCodexRuntime,
     verify_locked_private_codex_for_execution,
 )
+from .coding_agent_runner import (
+    CodingAgentExecutionError,
+    CodingAgentOutputError,
+    CodingAgentProcessStartError,
+    CodingAgentRunnerError,
+    CodingAgentTimeoutError,
+    UnsafeCodingAgentRunError,
+)
 from .contracts import (
     AcceptanceCoverage,
     CodexResult,
@@ -48,39 +57,14 @@ from .repository import HeadChangedError, WorktreeRepository
 from .repository_group import PreparedRepository
 
 
-class CodexRunnerError(RuntimeError):
-    """Base error for a safely rejected Codex execution."""
-
-
-class UnsafeCodexRunError(CodexRunnerError):
-    """The requested execution would cross a local safety boundary."""
-
-
-class CodexExecutionError(CodexRunnerError):
-    """Codex could not be executed successfully."""
-
-
-class CodexProcessStartError(CodexExecutionError):
-    """The requested executable could not be started."""
-
-
-class CodexTimeoutError(CodexExecutionError):
-    """Codex exceeded its execution deadline."""
-
-
-class CodexOutputError(CodexRunnerError):
-    """Codex returned invalid or unsafe structured output."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        validation_hint: str = "",
-        raw_output: str = "",
-    ) -> None:
-        super().__init__(message)
-        self.validation_hint = validation_hint
-        self.raw_output = raw_output
+# Compatibility names remain public while workflow layers depend on the
+# provider-neutral hierarchy.
+CodexRunnerError = CodingAgentRunnerError
+UnsafeCodexRunError = UnsafeCodingAgentRunError
+CodexExecutionError = CodingAgentExecutionError
+CodexProcessStartError = CodingAgentProcessStartError
+CodexTimeoutError = CodingAgentTimeoutError
+CodexOutputError = CodingAgentOutputError
 
 
 class _UnsafeReportedCommandError(ValueError):
@@ -1780,13 +1764,12 @@ def validate_codex_auth_source(source: Mapping[str, str]) -> Path | None:
 
 
 @dataclass(slots=True)
-class CodexRunner:
+class GuardedCodingAgentRunner(ABC):
+    """Shared schema, repository, evidence and activity guards for all agents."""
+
     run_root: Path
     repository: RepositoryGuard | WorktreeRepository
     command_executor: CommandExecutor = field(default=_bounded_subprocess, repr=False)
-    command_resolver: Callable[[], CodexCommand] = field(
-        default=resolve_codex_command, repr=False
-    )
     environment_provider: Callable[[], Mapping[str, str]] = field(
         default=lambda: os.environ, repr=False
     )
@@ -1818,21 +1801,35 @@ class CodexRunner:
             self.root_cause_schema_path = self.root_cause_schema_path.resolve()
         for value in (self.max_prompt_bytes, self.max_output_bytes):
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                raise ValueError("Codex size limits must be positive integers")
+                raise ValueError("coding-agent size limits must be positive integers")
         if not callable(self.environment_provider):
-            raise ValueError("Codex environment provider is invalid")
-        if not callable(self.command_resolver):
-            raise ValueError("Codex command resolver is invalid")
+            raise ValueError("coding-agent environment provider is invalid")
         if self.sandbox_mode_override not in {None, "danger-full-access"}:
-            raise ValueError("Codex sandbox override is invalid")
+            raise ValueError("coding-agent sandbox override is invalid")
         try:
             for schema_path in (self.schema_path, self.root_cause_schema_path):
                 schema = json.loads(schema_path.read_text(encoding="utf-8"))
                 Draft202012Validator.check_schema(schema)
                 if _is_reparse_or_link(schema_path) or not schema_path.is_file():
-                    raise ValueError("Codex output schema is not a regular file")
+                    raise ValueError("coding-agent output schema is not a regular file")
         except (OSError, ValueError) as error:
-            raise ValueError("Codex output schema is unavailable or invalid") from error
+            raise ValueError("coding-agent output schema is unavailable or invalid") from error
+
+    @abstractmethod
+    def _invoke(
+        self,
+        *,
+        run_id: str,
+        prompt: str,
+        cwd: Path | None,
+        sandbox: str,
+        timeout_seconds: float,
+        skip_git_repo_check: bool,
+        additional_directories: tuple[Path, ...],
+        output_schema: Path,
+    ) -> tuple[str, tuple[str, ...]]:
+        """Invoke one provider and return structured JSON plus removed secrets."""
+        raise NotImplementedError
 
     def run(
         self,
@@ -1846,7 +1843,7 @@ class CodexRunner:
         _root_cause_result: bool = False,
     ) -> CodexResult:
         if type(_root_cause_result) is not bool:
-            raise UnsafeCodexRunError("Codex result profile is invalid")
+            raise UnsafeCodingAgentRunError("coding-agent result profile is invalid")
         self.repository.assert_head_unchanged(prepared)
         read_only_baseline = self.repository.snapshot(prepared, mapping) if not allow_changes else None
         try:
@@ -1872,7 +1869,7 @@ class CodexRunner:
             payload = self._validate_output(
                 output, mapping, root_cause_result=_root_cause_result
             )
-        except CodexOutputError as error:
+        except CodingAgentOutputError as error:
             error.raw_output = output
             if _root_cause_result:
                 self._store_pending_root_cause_output(run_id, output)
@@ -1884,7 +1881,7 @@ class CodexRunner:
         if _contains_secret(
             snapshot_before_scan.model_dump(mode="json"), removed_secrets
         ):
-            raise CodexOutputError("Codex returned invalid structured output")
+            raise CodingAgentOutputError("coding agent returned invalid structured output")
         sensitive_content_found = self.repository.contains_sensitive_content(
             prepared, mapping, removed_secrets
         )
@@ -1899,20 +1896,22 @@ class CodexRunner:
         if snapshot_head_changed:
             raise HeadChangedError("worktree HEAD changed")
         if snapshot_content_changed:
-            raise CodexOutputError("Codex returned invalid structured output")
+            raise CodingAgentOutputError("coding agent returned invalid structured output")
         if sensitive_content_found:
-            raise CodexOutputError("Codex returned invalid structured output")
+            raise CodingAgentOutputError("coding agent returned invalid structured output")
         if read_only_baseline is not None:
             if snapshot != read_only_baseline:
-                raise UnsafeCodexRunError("read-only Codex stage modified repository evidence")
+                raise UnsafeCodingAgentRunError(
+                    "read-only coding-agent stage modified repository evidence"
+                )
         # Git, not the model's recollection of this turn, owns the cumulative
         # inventory. Head, scope, secret and read-only checks above still apply.
         payload["changed_files"] = list(snapshot.changed_files)
         try:
             result = self._result_from_payload(payload)
         except Exception as error:
-            wrapped = CodexOutputError(
-                "Codex returned invalid structured output",
+            wrapped = CodingAgentOutputError(
+                "coding agent returned invalid structured output",
                 validation_hint=_safe_validation_hint(error),
                 raw_output=output,
             )
@@ -1986,16 +1985,16 @@ class CodexRunner:
         _root_cause_result: bool = False,
     ) -> CodexResult:
         if type(_root_cause_result) is not bool:
-            raise UnsafeCodexRunError("Codex result profile is invalid")
+            raise UnsafeCodingAgentRunError("coding-agent result profile is invalid")
         expected_keys = group.topological_keys()
         if tuple(item.repository_key for item in prepared) != expected_keys:
-            raise UnsafeCodexRunError("prepared repositories do not match group topology")
+            raise UnsafeCodingAgentRunError("prepared repositories do not match group topology")
         configured = {item.key: item for item in group.repositories}
         if any(item.mapping != configured[item.repository_key] for item in prepared):
-            raise UnsafeCodexRunError("prepared repository mapping differs from group")
+            raise UnsafeCodingAgentRunError("prepared repository mapping differs from group")
         parents = {item.prepared.path.parent.resolve(strict=True) for item in prepared}
         if len(parents) != 1:
-            raise UnsafeCodexRunError("prepared repositories do not share one workspace")
+            raise UnsafeCodingAgentRunError("prepared repositories do not share one workspace")
         workspace = next(
             item.prepared.path
             for item in prepared
@@ -2036,7 +2035,7 @@ class CodexRunner:
             payload = self._validate_group_output(
                 output, group, root_cause_result=_root_cause_result
             )
-        except CodexOutputError as error:
+        except CodingAgentOutputError as error:
             error.raw_output = output
             if _root_cause_result:
                 self._store_pending_root_cause_output(run_id, output)
@@ -2050,7 +2049,7 @@ class CodexRunner:
                 raise HeadChangedError("worktree HEAD changed")
             before[item.repository_key] = snapshot
             if _contains_secret(snapshot.model_dump(mode="json"), removed_secrets):
-                raise CodexOutputError("Codex returned invalid structured output")
+                raise CodingAgentOutputError("coding agent returned invalid structured output")
             sensitive = self.repository.contains_sensitive_content(
                 item.prepared, item.mapping, removed_secrets
             ) or sensitive
@@ -2069,7 +2068,7 @@ class CodexRunner:
         ):
             raise HeadChangedError("worktree HEAD changed")
         if before != after or sensitive:
-            raise CodexOutputError("Codex returned invalid structured output")
+            raise CodingAgentOutputError("coding agent returned invalid structured output")
         actual = tuple(
             (key, path)
             for key in expected_keys
@@ -2077,7 +2076,9 @@ class CodexRunner:
         )
         if read_only_baseline is not None:
             if after != read_only_baseline:
-                raise UnsafeCodexRunError("read-only Codex stage modified repository evidence")
+                raise UnsafeCodingAgentRunError(
+                    "read-only coding-agent stage modified repository evidence"
+                )
         # The verified worktrees own the cumulative inventory, not turn-local claims.
         payload["repository_changes"] = [
             {"repository_key": key, "path": path} for key, path in actual
@@ -2085,8 +2086,8 @@ class CodexRunner:
         try:
             result = self._result_from_payload(payload)
         except Exception as error:
-            wrapped = CodexOutputError(
-                "Codex returned invalid structured output",
+            wrapped = CodingAgentOutputError(
+                "coding agent returned invalid structured output",
                 validation_hint=_safe_validation_hint(error),
                 raw_output=output,
             )
@@ -2160,7 +2161,7 @@ class CodexRunner:
         validation_hint: str = "",
         timeout_seconds: float = 300,
     ) -> CodexResult:
-        """Validate an already completed analysis without starting Codex again."""
+        """Validate completed analysis without starting the coding agent again."""
 
         if (
             type(raw_output) is not str
@@ -2168,7 +2169,7 @@ class CodexRunner:
             or len(raw_output.encode("utf-8", "strict")) > self.max_prompt_bytes // 2
             or not _is_positive_finite_number(timeout_seconds)
         ):
-            raise CodexOutputError("Codex result format repair is unavailable")
+            raise CodingAgentOutputError("coding-agent result format repair is unavailable")
         try:
             normalized = self._validate_output(
                 raw_output,
@@ -2177,8 +2178,8 @@ class CodexRunner:
             )
             result = self._result_from_payload(normalized)
         except Exception as error:
-            wrapped = CodexOutputError(
-                "Codex returned invalid structured output",
+            wrapped = CodingAgentOutputError(
+                "coding agent returned invalid structured output",
                 validation_hint=(
                     _safe_validation_hint(error)
                     or validation_hint
@@ -2195,7 +2196,7 @@ class CodexRunner:
         return result
 
     def activity(self, run_id: str, *, limit: int = 40) -> tuple[str, ...]:
-        """Return the bounded, sanitized observable activity for one Codex run."""
+        """Return bounded, sanitized activity for one coding-agent run."""
 
         if (
             not _RUN_ID.fullmatch(run_id)
@@ -2325,7 +2326,7 @@ class CodexRunner:
                 record(f"Next investigation {index}: ", suggestion)
 
     def _record_validation_failure(
-        self, run_id: str, error: CodexOutputError
+        self, run_id: str, error: CodingAgentOutputError
     ) -> None:
         if error.validation_hint:
             self._record_activity(
@@ -2361,37 +2362,20 @@ class CodexRunner:
             raise UnsafeCodexRunError("run_id is not a safe path segment")
         return self._prepare_run_directory(run_id) / _PENDING_ROOT_CAUSE_FILE
 
+    @abstractmethod
     def _session_path(self, run_id: str) -> Path:
-        if not _RUN_ID.fullmatch(run_id) or run_id in {".", ".."}:
-            raise UnsafeCodexRunError("run_id is not a safe path segment")
-        return self._prepare_run_directory(run_id) / _CODEX_SESSION_FILE
+        """Return the provider-owned, private session-state path."""
+        raise NotImplementedError
 
+    @abstractmethod
     def _read_session_id(self, run_id: str) -> str | None:
-        path = self._session_path(run_id)
-        try:
-            metadata = path.lstat()
-            if (
-                _is_reparse_or_link(path)
-                or not stat.S_ISREG(metadata.st_mode)
-                or not 36 <= metadata.st_size <= 37
-            ):
-                raise UnsafeCodexRunError("Codex session state is unsafe")
-            session_id = path.read_text(encoding="ascii", errors="strict").strip()
-            if _CODEX_SESSION_ID.fullmatch(session_id) is None:
-                raise UnsafeCodexRunError("Codex session state is unsafe")
-            return session_id.lower()
-        except FileNotFoundError:
-            return None
-        except (OSError, UnicodeError) as error:
-            raise UnsafeCodexRunError("Codex session state is unsafe") from error
+        """Load and validate provider session continuity state."""
+        raise NotImplementedError
 
+    @abstractmethod
     def _store_session_id(self, run_id: str, session_id: str) -> None:
-        if _CODEX_SESSION_ID.fullmatch(session_id) is None:
-            raise UnsafeCodexRunError("Codex returned an invalid session id")
-        self._write_prompt(
-            self._session_path(run_id),
-            (session_id.lower() + "\n").encode("ascii", "strict"),
-        )
+        """Validate and persist provider session continuity state."""
+        raise NotImplementedError
 
     def _store_pending_root_cause_output(self, run_id: str, output: str) -> None:
         data = output.encode("utf-8", "strict")
@@ -2425,7 +2409,7 @@ class CodexRunner:
         except OSError as error:
             raise UnsafeCodexRunError("pending Codex result could not be cleared") from error
 
-    def _invoke(
+    def _invoke_codex(
         self,
         *,
         run_id: str,
@@ -2997,8 +2981,78 @@ class CodexRunner:
         return payload
 
 
+@dataclass(slots=True)
+class CodexRunner(GuardedCodingAgentRunner):
+    """Codex CLI transport over the shared guarded runner."""
+
+    command_resolver: Callable[[], CodexCommand] = field(
+        default=resolve_codex_command, repr=False
+    )
+
+    def __post_init__(self) -> None:
+        super(CodexRunner, self).__post_init__()
+        if not callable(self.command_resolver):
+            raise ValueError("Codex command resolver is invalid")
+
+    def _session_path(self, run_id: str) -> Path:
+        if not _RUN_ID.fullmatch(run_id) or run_id in {".", ".."}:
+            raise UnsafeCodexRunError("run_id is not a safe path segment")
+        return self._prepare_run_directory(run_id) / _CODEX_SESSION_FILE
+
+    def _read_session_id(self, run_id: str) -> str | None:
+        path = self._session_path(run_id)
+        try:
+            metadata = path.lstat()
+            if (
+                _is_reparse_or_link(path)
+                or not stat.S_ISREG(metadata.st_mode)
+                or not 36 <= metadata.st_size <= 37
+            ):
+                raise UnsafeCodexRunError("Codex session state is unsafe")
+            session_id = path.read_text(encoding="ascii", errors="strict").strip()
+            if _CODEX_SESSION_ID.fullmatch(session_id) is None:
+                raise UnsafeCodexRunError("Codex session state is unsafe")
+            return session_id.lower()
+        except FileNotFoundError:
+            return None
+        except (OSError, UnicodeError) as error:
+            raise UnsafeCodexRunError("Codex session state is unsafe") from error
+
+    def _store_session_id(self, run_id: str, session_id: str) -> None:
+        if _CODEX_SESSION_ID.fullmatch(session_id) is None:
+            raise UnsafeCodexRunError("Codex returned an invalid session id")
+        self._write_prompt(
+            self._session_path(run_id),
+            (session_id.lower() + "\n").encode("ascii", "strict"),
+        )
+
+    def _invoke(
+        self,
+        *,
+        run_id: str,
+        prompt: str,
+        cwd: Path | None,
+        sandbox: str,
+        timeout_seconds: float,
+        skip_git_repo_check: bool,
+        additional_directories: tuple[Path, ...],
+        output_schema: Path,
+    ) -> tuple[str, tuple[str, ...]]:
+        return self._invoke_codex(
+            run_id=run_id,
+            prompt=prompt,
+            cwd=cwd,
+            sandbox=sandbox,
+            timeout_seconds=timeout_seconds,
+            skip_git_repo_check=skip_git_repo_check,
+            additional_directories=additional_directories,
+            output_schema=output_schema,
+        )
+
+
 __all__ = [
     "CodexCommand", "CodexExecutionError", "CodexOutputError", "CodexProcessStartError",
-    "CodexRunner", "CodexRunnerError", "CodexTimeoutError", "UnsafeCodexRunError",
+    "CodexRunner", "CodexRunnerError", "CodexTimeoutError", "GuardedCodingAgentRunner",
+    "UnsafeCodexRunError",
     "resolve_codex_command",
 ]
