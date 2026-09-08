@@ -54,6 +54,17 @@ def coding_agent_definition(key: str) -> CodingAgentDefinition:
     raise ValueError("unknown coding agent")
 
 
+def validate_coding_agent_provider_keys(keys: object) -> None:
+    """Fail fast when the runtime registry drifts from selectable providers."""
+
+    try:
+        registered = frozenset(keys)  # type: ignore[arg-type]
+    except TypeError:
+        raise ValueError("coding agent provider registry is invalid") from None
+    if registered != SUPPORTED_CODING_AGENT_KEYS:
+        raise ValueError("coding agent provider registry is incomplete")
+
+
 def _canonical_executable(raw: str) -> Path | None:
     try:
         path = Path(raw).resolve(strict=True)
@@ -128,4 +139,5 @@ __all__ = [
     "coding_agent_definition",
     "discover_coding_agents",
     "resolve_coding_agent_executable",
+    "validate_coding_agent_provider_keys",
 ]

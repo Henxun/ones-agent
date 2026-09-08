@@ -27,7 +27,10 @@ from .codex_runner import (
 )
 from .codex_runtime import CodexRuntimePreparer
 from .claude_runner import ClaudeRunner, safe_claude_environment
-from .coding_agents import coding_agent_definition
+from .coding_agents import (
+    coding_agent_definition,
+    validate_coding_agent_provider_keys,
+)
 from .coding_agent_runner import CodingAgentRunner
 from .config import (
     BUILTIN_WORKSPACE_PROFILE,
@@ -465,11 +468,12 @@ class RuntimeBootstrapper:
                 SecretKind.CODEX_API_KEY,
                 SecretKind.CODEX_AUTH_TOKEN,
             } & set(active.credential_kinds)
-            if public.codex_auth_mode == "credential":
-                if len(codex_kinds) != 1 or public.codex_home is not None:
+            if public.coding_agent == "codex":
+                if public.codex_auth_mode == "credential":
+                    if len(codex_kinds) != 1 or public.codex_home is not None:
+                        raise ValueError
+                elif public.codex_auth_mode != "file" or codex_kinds:
                     raise ValueError
-            elif public.codex_auth_mode != "file" or codex_kinds:
-                raise ValueError
             validated_secrets = {
                 kind: _validate_runtime_secret(value)
                 for kind, value in secrets.values.items()
@@ -584,6 +588,7 @@ class RuntimeBootstrapper:
                 "codex": build_codex,
                 "claude": build_claude,
             }
+            validate_coding_agent_provider_keys(agent_builders)
             if self.adapters.coding_agent_factory is not None:
                 coding_agent_backend = self.adapters.coding_agent_factory(
                     public.coding_agent,

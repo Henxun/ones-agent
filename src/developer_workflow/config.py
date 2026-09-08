@@ -147,6 +147,12 @@ class DeveloperWorkflowConfig(WorkflowModel):
     publishing: PublishingConfig
     verification_nodes: tuple[VerificationNode, ...] = Field(default=(), max_length=64)
 
+    @property
+    def max_coding_agent_attempts(self) -> int:
+        """Provider-neutral name for the persisted legacy setting."""
+
+        return self.max_codex_attempts
+
     @field_validator("workspace_names")
     @classmethod
     def validate_workspace_names(cls, names: dict[str, str]) -> dict[str, str]:

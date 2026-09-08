@@ -44,7 +44,7 @@ from .coding_agent_runner import (
 )
 from .contracts import (
     AcceptanceCoverage,
-    CodexResult,
+    CodingAgentResult,
     CommandResult,
     PreparedWorktree,
     RepositoryChangeClaim,
@@ -1841,7 +1841,7 @@ class GuardedCodingAgentRunner(ABC):
         timeout_seconds: float = 1800,
         allow_changes: bool = True,
         _root_cause_result: bool = False,
-    ) -> CodexResult:
+    ) -> CodingAgentResult:
         if type(_root_cause_result) is not bool:
             raise UnsafeCodingAgentRunError("coding-agent result profile is invalid")
         self.repository.assert_head_unchanged(prepared)
@@ -1935,7 +1935,7 @@ class GuardedCodingAgentRunner(ABC):
         prompt: str,
         timeout_seconds: float = 1800,
         allow_changes: bool = False,
-    ) -> CodexResult:
+    ) -> CodingAgentResult:
         """Run read-only root-cause analysis with stage-irrelevant fields discarded."""
 
         if allow_changes is not False:
@@ -1957,7 +1957,7 @@ class GuardedCodingAgentRunner(ABC):
         run_id: str,
         prompt: str,
         timeout_seconds: float = 1800,
-    ) -> CodexResult:
+    ) -> CodingAgentResult:
         """Run source-only structured analysis without creating a worktree."""
 
         output, _ = self._invoke(
@@ -1983,7 +1983,7 @@ class GuardedCodingAgentRunner(ABC):
         timeout_seconds: float = 1800,
         allow_changes: bool = True,
         _root_cause_result: bool = False,
-    ) -> CodexResult:
+    ) -> CodingAgentResult:
         if type(_root_cause_result) is not bool:
             raise UnsafeCodingAgentRunError("coding-agent result profile is invalid")
         expected_keys = group.topological_keys()
@@ -2106,7 +2106,7 @@ class GuardedCodingAgentRunner(ABC):
         self,
         *,
         run_id: str,
-    ) -> CodexResult | None:
+    ) -> CodingAgentResult | None:
         """Resume format-only recovery when a previous analysis report is available."""
 
         raw_output = self._read_pending_root_cause_output(run_id)
@@ -2137,7 +2137,7 @@ class GuardedCodingAgentRunner(ABC):
         prompt: str,
         timeout_seconds: float = 1800,
         allow_changes: bool = False,
-    ) -> CodexResult:
+    ) -> CodingAgentResult:
         """Run group root-cause analysis with stage-irrelevant fields discarded."""
 
         if allow_changes is not False:
@@ -2160,7 +2160,7 @@ class GuardedCodingAgentRunner(ABC):
         raw_output: str,
         validation_hint: str = "",
         timeout_seconds: float = 300,
-    ) -> CodexResult:
+    ) -> CodingAgentResult:
         """Validate completed analysis without starting the coding agent again."""
 
         if (
@@ -2286,7 +2286,7 @@ class GuardedCodingAgentRunner(ABC):
     def _record_root_cause_report(
         self,
         run_id: str,
-        result: CodexResult,
+        result: CodingAgentResult,
         secrets_to_remove: tuple[str, ...],
     ) -> None:
         """Append the actionable part of a validated report to the live activity."""
@@ -2676,7 +2676,7 @@ class GuardedCodingAgentRunner(ABC):
         return output, removed_secrets
 
     @staticmethod
-    def _result_from_payload(payload: dict[str, Any]) -> CodexResult:
+    def _result_from_payload(payload: dict[str, Any]) -> CodingAgentResult:
         now = datetime.now(timezone.utc)
         commands = tuple(
             CommandResult(
@@ -2685,7 +2685,7 @@ class GuardedCodingAgentRunner(ABC):
             )
             for item in payload["commands"]
         )
-        return CodexResult(
+        return CodingAgentResult(
             verification_needs=payload.get("verification_needs", ()),
             summary=payload["summary"], changed_files=tuple(payload["changed_files"]),
             repository_changes=tuple(

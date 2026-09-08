@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .contracts import (
-    CodexResult,
+    CodingAgentResult,
     CommandOutcome,
     CommandResult,
     RepositoryGroupMapping,
@@ -26,7 +26,7 @@ class GroupCommandRunner(Protocol):
         raise NotImplementedError
 
 
-def aggregate_claims(result: CodexResult) -> dict[str, tuple[str, ...]]:
+def aggregate_claims(result: CodingAgentResult) -> dict[str, tuple[str, ...]]:
     """Group repository-qualified claims without losing model output order."""
 
     grouped: dict[str, list[str]] = {}
@@ -57,7 +57,7 @@ def assert_group_snapshots_equal(
 
 
 def assert_group_claims(
-    result: CodexResult,
+    result: CodingAgentResult,
     snapshots: dict[str, RepositorySnapshot],
     group: RepositoryGroupMapping,
 ) -> None:

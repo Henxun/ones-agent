@@ -834,19 +834,33 @@ def run_detail_from_run(run: WorkflowRun) -> RunDetail:
             "defect source evidence is insufficient": (
                 "ONES defect description is missing or lacks reproducible details"
             ),
-            "Codex process could not be started": "Codex process could not be started",
-            "Codex analysis timed out": "Codex analysis timed out",
+            "Codex process could not be started": "coding agent process could not be started",
+            "coding agent process could not be started": "coding agent process could not be started",
+            "Codex analysis timed out": "coding agent analysis timed out",
+            "coding agent analysis timed out": "coding agent analysis timed out",
             "Codex analysis returned invalid structured output": (
-                "Codex analysis returned invalid structured output"
+                "coding agent analysis returned invalid structured output"
+            ),
+            "coding agent analysis returned invalid structured output": (
+                "coding agent analysis returned invalid structured output"
             ),
             "Codex result format repair failed": (
-                "Codex result format repair failed"
+                "coding agent result format repair failed"
+            ),
+            "coding agent result format repair failed": (
+                "coding agent result format repair failed"
             ),
             "Codex runtime safety validation failed": (
-                "Codex runtime safety validation failed"
+                "coding agent runtime safety validation failed"
+            ),
+            "coding agent runtime safety validation failed": (
+                "coding agent runtime safety validation failed"
             ),
             "Codex analysis exited unsuccessfully": (
-                "Codex analysis exited unsuccessfully"
+                "coding agent analysis exited unsuccessfully"
+            ),
+            "coding agent analysis exited unsuccessfully": (
+                "coding agent analysis exited unsuccessfully"
             ),
             "repository safety validation failed": (
                 "Repository safety validation failed"
@@ -911,14 +925,14 @@ def run_detail_from_run(run: WorkflowRun) -> RunDetail:
             run.state is WorkflowState.COMPLETED
             and run.defect_action is DefectAction.ANALYZE
             and bool(run.root_cause_evidence)
-            and not run.codex_results[0].unresolved_items
-            if run.codex_results
+            and not run.coding_agent_results[0].unresolved_items
+            if run.coding_agent_results
             else False
         ),
         can_regenerate_analysis=(
             run.state is WorkflowState.COMPLETED
             and run.defect_action is DefectAction.ANALYZE
-            and bool(run.codex_results)
+            and bool(run.coding_agent_results)
         ),
     )
 

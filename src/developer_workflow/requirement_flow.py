@@ -51,7 +51,7 @@ from .config import (
 )
 from .contracts import (
     ApprovalPackage,
-    CodexResult,
+    CodingAgentResult,
     CommandOutcome,
     CommandResult,
     PreparedWorktree,
@@ -163,11 +163,11 @@ class PreflightAnalyzer(Protocol):
         wiki_snapshots: tuple[WikiPageSnapshot, ...],
         acceptance_criteria: tuple[str, ...],
         prompt: str,
-    ) -> CodexResult: ...
+    ) -> CodingAgentResult: ...
 
 
 class RequirementCodingAgent(PreflightAnalyzer, Protocol):
-    def analyze_testing(self, *, run_id: str, prompt: str) -> CodexResult: ...
+    def analyze_testing(self, *, run_id: str, prompt: str) -> CodingAgentResult: ...
 
     def run_stage(
         self,
@@ -178,7 +178,7 @@ class RequirementCodingAgent(PreflightAnalyzer, Protocol):
         run_id: str,
         prompt: str,
         allow_changes: bool,
-    ) -> CodexResult: ...
+    ) -> CodingAgentResult: ...
 
     def run_group_stage(
         self,
@@ -189,7 +189,7 @@ class RequirementCodingAgent(PreflightAnalyzer, Protocol):
         run_id: str,
         prompt: str,
         allow_changes: bool,
-    ) -> CodexResult: ...
+    ) -> CodingAgentResult: ...
 
 
 # Compatibility alias for existing integrations and persisted documentation.
@@ -313,7 +313,7 @@ class CodingAgentRequirementAdapter:
 
     def _normalize_root_cause_result(
         self, run_id: str, error: CodingAgentOutputError
-    ) -> CodexResult:
+    ) -> CodingAgentResult:
         """Normalize one completed analysis without re-running repository work."""
 
         repair = getattr(self.runner, "repair_root_cause_result", None)
@@ -351,7 +351,7 @@ class CodingAgentRequirementAdapter:
         wiki_snapshots: tuple[WikiPageSnapshot, ...],
         acceptance_criteria: tuple[str, ...],
         prompt: str,
-    ) -> CodexResult:
+    ) -> CodingAgentResult:
         return self.runner.run_preflight(run_id=run_id, prompt=prompt)
 
     def run_stage(
@@ -363,7 +363,7 @@ class CodingAgentRequirementAdapter:
         run_id: str,
         prompt: str,
         allow_changes: bool,
-    ) -> CodexResult:
+    ) -> CodingAgentResult:
         if stage not in {
             "implementation",
             "testing",
@@ -405,7 +405,7 @@ class CodingAgentRequirementAdapter:
                 raise
             return self._normalize_root_cause_result(run_id, error)
 
-    def analyze_testing(self, *, run_id: str, prompt: str) -> CodexResult:
+    def analyze_testing(self, *, run_id: str, prompt: str) -> CodingAgentResult:
         return self.runner.run_preflight(run_id=run_id, prompt=prompt)
 
     def run_group_stage(
@@ -417,7 +417,7 @@ class CodingAgentRequirementAdapter:
         run_id: str,
         prompt: str,
         allow_changes: bool,
-    ) -> CodexResult:
+    ) -> CodingAgentResult:
         if stage not in {
             "implementation", "testing", "review", "root_cause", "reproduction"
         }:
@@ -1606,6 +1606,12 @@ class RequirementFlow:
     test_runner: ConfiguredTestRunner
     group_workspace: RepositoryGroupWorkspace | None = None
 
+    @property
+    def coding_agent(self) -> RequirementCodingAgent:
+        """Provider-neutral runtime name; ``codex`` remains constructor-compatible."""
+
+        return self.codex
+
     def execute(self, run: WorkflowRun) -> WorkflowRun:
         """Continue a requirement run from its persisted safe checkpoint."""
 
@@ -1764,9 +1770,9 @@ class RequirementFlow:
                 raise _FlowBlocked(
                     _Blocked("confirmed repository mapping is not authorized", WorkflowState.VALIDATING)
                 )
-        if not run.codex_results:
+        if not run.coding_agent_results:
             criteria = self._criteria(run.wiki_snapshots)
-            result = self.codex.preflight(
+            result = self.coding_agent.preflight(
                 run_id=run.run_id,
                 requirement=requirement,
                 wiki_snapshots=run.wiki_snapshots,
@@ -1775,7 +1781,7 @@ class RequirementFlow:
             )
             run = self._save(run.validated_update(codex_results=(result,)))
         else:
-            result = run.codex_results[0]
+            result = run.coding_agent_results[0]
         if (
             result.unresolved_items
             or result.changed_files
@@ -1854,8 +1860,8 @@ class RequirementFlow:
     def _implement_group(self, run: WorkflowRun) -> WorkflowRun:
         group = self._group(run)
         prepared = self._prepared_group(run)
-        if len(run.codex_results) < 2:
-            result = self.codex.run_group_stage(
+        if len(run.coding_agent_results) < 2:
+            result = self.coding_agent.run_group_stage(
                 "implementation",
                 group=group,
                 prepared=prepared,
@@ -1887,7 +1893,7 @@ class RequirementFlow:
                 for item in run.repository_evidence
             )
             run = self._save(run.validated_update(
-                codex_results=(*run.codex_results, result),
+                codex_results=(*run.coding_agent_results, result),
                 repository_evidence=evidence,
                 integration_test_results=(),
                 acceptance_coverage=result.acceptance_coverage,
@@ -1942,7 +1948,7 @@ class RequirementFlow:
             test_results=all_results,
             retry_count=run.retry_count + 1,
         ))
-        reported = self.codex.analyze_testing(
+        reported = self.coding_agent.analyze_testing(
             run_id=current.run_id,
             prompt=self._testing_prompt(current, all_results),
         )
@@ -1957,7 +1963,7 @@ class RequirementFlow:
                 _Blocked("testing analysis is invalid", WorkflowState.TESTING), current
             )
         current = self._save(current.validated_update(
-            codex_results=(*current.codex_results, reported)
+            codex_results=(*current.coding_agent_results, reported)
         ))
         return self._transition(
             current, WorkflowState.AI_REVIEW, "review tested repository group evidence"
@@ -1969,8 +1975,8 @@ class RequirementFlow:
         prepared, mapping = self._prepared(run), self._mapping(run)
         # Index zero is the source preflight.  A persisted implementation result
         # makes resume idempotent across the next state transition.
-        if len(run.codex_results) < 2:
-            result = self.codex.run_stage(
+        if len(run.coding_agent_results) < 2:
+            result = self.coding_agent.run_stage(
                 "implementation",
                 prepared=prepared,
                 mapping=mapping,
@@ -1982,7 +1988,7 @@ class RequirementFlow:
             self._assert_claimed_files(result, snapshot)
             run = self._save(
                 run.validated_update(
-                    codex_results=(*run.codex_results, result),
+                    codex_results=(*run.coding_agent_results, result),
                     changed_files=snapshot.changed_files,
                     head_commit=snapshot.head_commit,
                     tested_snapshot=None,
@@ -1992,21 +1998,21 @@ class RequirementFlow:
             snapshot = self._verified_snapshot(prepared, mapping)
         try:
             self._assert_acceptance_coverage(
-                run.codex_results[1],
+                run.coding_agent_results[1],
                 self._criteria(run.wiki_snapshots),
                 snapshot,
                 mapping,
             )
-            self._assert_no_unresolved(run.codex_results[1])
+            self._assert_no_unresolved(run.coding_agent_results[1])
         except RequirementFlowError as error:
             raise _FlowBlocked(
                 _Blocked("implementation evidence is incomplete", WorkflowState.IMPLEMENTING),
                 run,
             ) from error
-        if run.acceptance_coverage != run.codex_results[1].acceptance_coverage:
+        if run.acceptance_coverage != run.coding_agent_results[1].acceptance_coverage:
             run = self._save(
                 run.validated_update(
-                    acceptance_coverage=run.codex_results[1].acceptance_coverage
+                    acceptance_coverage=run.coding_agent_results[1].acceptance_coverage
                 )
             )
         return self._transition(run, WorkflowState.TESTING, "run configured tests")
@@ -2021,10 +2027,10 @@ class RequirementFlow:
                 _Blocked("repository mapping has no configured tests", WorkflowState.TESTING)
             )
         current = run
-        while current.retry_count < self.config.max_codex_attempts:
+        while current.retry_count < self.config.max_coding_agent_attempts:
             if current.retry_count:
                 try:
-                    repair = self.codex.run_stage(
+                    repair = self.coding_agent.run_stage(
                         "implementation",
                         prepared=prepared,
                         mapping=mapping,
@@ -2043,7 +2049,7 @@ class RequirementFlow:
                     ) from error
                 current = self._save(
                     current.validated_update(
-                        codex_results=(*current.codex_results, repair),
+                        codex_results=(*current.coding_agent_results, repair),
                         tested_snapshot=None,
                     )
                 )
@@ -2105,7 +2111,7 @@ class RequirementFlow:
                 )
             )
             try:
-                reported = self.codex.analyze_testing(
+                reported = self.coding_agent.analyze_testing(
                     run_id=current.run_id,
                     prompt=self._testing_prompt(current, actual),
                 )
@@ -2124,7 +2130,7 @@ class RequirementFlow:
                     current,
                 ) from error
             current = self._save(
-                current.validated_update(codex_results=(*current.codex_results, reported))
+                current.validated_update(codex_results=(*current.coding_agent_results, reported))
             )
             return self._transition(
                 current, WorkflowState.AI_REVIEW, "review tested implementation evidence"
@@ -2152,7 +2158,7 @@ class RequirementFlow:
                 _Blocked("repository diff changed after tests", WorkflowState.AI_REVIEW)
             )
         if current.review is None:
-            review = self.codex.run_stage(
+            review = self.coding_agent.run_stage(
                 "review",
                 prepared=prepared,
                 mapping=mapping,
@@ -2249,7 +2255,7 @@ class RequirementFlow:
             ) from error
         current = run
         if current.review is None:
-            review = self.codex.run_group_stage(
+            review = self.coding_agent.run_group_stage(
                 "review", group=group, prepared=prepared, run_id=current.run_id,
                 prompt=self._review_prompt(current), allow_changes=False,
             )
@@ -2308,7 +2314,7 @@ class RequirementFlow:
         requirement, group = self._requirement(run), self._group(run)
         prepared = {item.repository_key: item for item in self._prepared_group(run)}
         evidence_by_key = {item.repository_key: item for item in run.repository_evidence}
-        review = run.review or CodexResult()
+        review = run.review or CodingAgentResult()
         commit_messages = {
             key: (
                 f"feat({key}): {requirement.title}"
@@ -2344,10 +2350,10 @@ class RequirementFlow:
                        separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         risks = tuple(dict.fromkeys(
-            item for result in (*run.codex_results, review) for item in result.risks
+            item for result in (*run.coding_agent_results, review) for item in result.risks
         ))
         evidence = tuple(dict.fromkeys(
-            item for result in (*run.codex_results, review) for item in result.evidence
+            item for result in (*run.coding_agent_results, review) for item in result.evidence
         )) or ("verified repository group diff and configured tests",)
         return ApprovalPackage(
             verification_records=verification.records_for_approval(run),
@@ -2384,21 +2390,21 @@ class RequirementFlow:
         criteria = self._criteria(run.wiki_snapshots)
         if not run.acceptance_coverage:
             raise RequirementFlowError("acceptance coverage is unavailable")
-        review = run.review or CodexResult()
+        review = run.review or CodingAgentResult()
         source_digest = hashlib.sha256(
             json.dumps(asdict(requirement), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         risks = tuple(
             dict.fromkeys(
                 item
-                for result in (*run.codex_results, review)
+                for result in (*run.coding_agent_results, review)
                 for item in result.risks
             )
         )
         evidence = tuple(
             dict.fromkeys(
                 item
-                for result in (*run.codex_results, review)
+                for result in (*run.coding_agent_results, review)
                 for item in result.evidence
             )
         ) or ("verified repository diff and configured tests",)
@@ -2448,21 +2454,21 @@ class RequirementFlow:
         return snapshot
 
     @staticmethod
-    def _assert_claimed_files(result: CodexResult, snapshot: RepositorySnapshot) -> None:
+    def _assert_claimed_files(result: CodingAgentResult, snapshot: RepositorySnapshot) -> None:
         if tuple(sorted(result.changed_files)) != tuple(sorted(snapshot.changed_files)):
-            raise RequirementFlowError("Codex file claims do not match repository evidence")
+            raise RequirementFlowError("coding agent file claims do not match repository evidence")
 
     @staticmethod
-    def _assert_reported_commands(result: CodexResult, commands: tuple[str, ...]) -> None:
+    def _assert_reported_commands(result: CodingAgentResult, commands: tuple[str, ...]) -> None:
         reported = tuple(item.command for item in result.commands)
         if reported != commands or tuple(
             _split_configured_command(item) for item in reported
         ) != tuple(_split_configured_command(item) for item in commands):
-            raise RequirementFlowError("Codex command claims do not match configured tests")
+            raise RequirementFlowError("coding agent command claims do not match configured tests")
 
     @staticmethod
     def _assert_acceptance_coverage(
-        result: CodexResult,
+        result: CodingAgentResult,
         criteria: tuple[str, ...],
         snapshot: RepositorySnapshot,
         mapping: RepositoryMapping,
@@ -2486,7 +2492,7 @@ class RequirementFlow:
 
     @staticmethod
     def _assert_group_acceptance_coverage(
-        result: CodexResult,
+        result: CodingAgentResult,
         criteria: tuple[str, ...],
         snapshots: dict[str, RepositorySnapshot],
         group: RepositoryGroupMapping,
@@ -2523,9 +2529,9 @@ class RequirementFlow:
             )
 
     @staticmethod
-    def _assert_no_unresolved(result: CodexResult) -> None:
+    def _assert_no_unresolved(result: CodingAgentResult) -> None:
         if result.unresolved_items:
-            raise RequirementFlowError("Codex stage has unresolved items")
+            raise RequirementFlowError("coding agent stage has unresolved items")
 
     @staticmethod
     def _missing_requirement_fields(requirement: RequirementRecord) -> tuple[str, ...]:
@@ -2601,7 +2607,7 @@ class RequirementFlow:
         if resume_state is WorkflowState.IMPLEMENTING:
             return self._save(
                 run.validated_update(
-                    codex_results=run.codex_results[:1],
+                    codex_results=run.coding_agent_results[:1],
                     test_results=(),
                     tested_snapshot=None,
                     acceptance_coverage=(),
@@ -2800,7 +2806,7 @@ class RequirementFlow:
         criteria: tuple[str, ...],
         snapshot: RepositorySnapshot,
         tests: tuple[CommandResult, ...],
-        review: CodexResult,
+        review: CodingAgentResult,
     ) -> str:
         return (
             f"## {requirement.title}\n\n"

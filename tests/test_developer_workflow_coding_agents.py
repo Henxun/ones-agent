@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+import pytest
 from textual.widgets import Button, Select, TabbedContent
 
 from src.developer_workflow.claude_runner import ClaudeRunner
@@ -22,6 +23,7 @@ from src.developer_workflow.coding_agents import (
     CodingAgentInstallation,
     coding_agent_definition,
     discover_coding_agents,
+    validate_coding_agent_provider_keys,
 )
 from src.developer_workflow.tui.app import DeveloperWorkflowTuiApp
 from src.developer_workflow.tui.coding_agent_settings import CodingAgentSettingsPane
@@ -69,6 +71,9 @@ def test_runner_abstraction_is_provider_neutral_and_backwards_compatible(
 def test_supported_agent_registry_owns_selection_keys() -> None:
     assert SUPPORTED_CODING_AGENT_KEYS == {"codex", "claude"}
     assert coding_agent_definition("claude").command == "claude"
+    validate_coding_agent_provider_keys({"codex": object(), "claude": object()})
+    with pytest.raises(ValueError, match="incomplete"):
+        validate_coding_agent_provider_keys({"codex": object()})
 
 
 async def test_inline_agent_selection_preserves_existing_configuration(tmp_path: Path) -> None:

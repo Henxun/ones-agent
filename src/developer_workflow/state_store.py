@@ -126,7 +126,7 @@ def _is_completed_verification(run: WorkflowRun) -> bool:
         run.type is WorkflowType.DEFECT and run.verification_only
         and run.defect_action is DefectAction.ANALYZE_AND_REPAIR
         and run.defect_checkpoint is DefectCheckpoint.FINAL_TESTED
-        and len(run.codex_results) >= 2 and run.root_cause_evidence
+        and len(run.coding_agent_results) >= 2 and run.root_cause_evidence
         and run.reproduction_test_sha256 and len(run.pre_fix_test_results) == 1
         and run.pre_fix_snapshot is not None
         and run.test_results and run.tested_snapshot is not None
@@ -153,7 +153,7 @@ def _is_completed_verification(run: WorkflowRun) -> bool:
         # A passing baseline may subsequently receive review-driven code/test
         # corrections. This remains local validation and cannot publish.
         return (
-            len(run.codex_results) >= 3
+            len(run.coding_agent_results) >= 3
             and any(item.source == "system_review" for item in run.revisions)
             and bool(run.review_repair_snapshot_sha256)
             and (
@@ -164,7 +164,7 @@ def _is_completed_verification(run: WorkflowRun) -> bool:
                 )
             )
         )
-    if len(run.codex_results) != 2:
+    if len(run.coding_agent_results) != 2:
         return False
     if run.repository_group is not None:
         if target.reproduction_file is None:
@@ -197,13 +197,13 @@ def _is_completed_analysis(run: WorkflowRun) -> bool:
         run.type is WorkflowType.DEFECT
         and run.defect_action is DefectAction.ANALYZE
         and run.defect_checkpoint is DefectCheckpoint.ROOT_VERIFIED
-        and len(run.codex_results) == 1
+        and len(run.coding_agent_results) == 1
         and bool(run.root_cause_evidence)
-        and run.codex_results[0].root_cause_evidence == run.root_cause_evidence
-        and not run.codex_results[0].unresolved_items
-        and not run.codex_results[0].changed_files
-        and not run.codex_results[0].repository_changes
-        and not run.codex_results[0].commands
+        and run.coding_agent_results[0].root_cause_evidence == run.root_cause_evidence
+        and not run.coding_agent_results[0].unresolved_items
+        and not run.coding_agent_results[0].changed_files
+        and not run.coding_agent_results[0].repository_changes
+        and not run.coding_agent_results[0].commands
         and not run.changed_files
         and not run.test_results
         and run.approval is None
@@ -217,7 +217,7 @@ def _is_completed_analysis(run: WorkflowRun) -> bool:
 def _has_recorded_readonly_analysis(run: WorkflowRun) -> bool:
     results = (
         *run.previous_analysis_results,
-        *run.codex_results[:1],
+        *run.coding_agent_results[:1],
     )
     return any(
         bool(result.root_cause_evidence)
@@ -463,7 +463,7 @@ class FileRunStore:
                     analysis_generation=current.analysis_generation + 1,
                     previous_analysis_results=(
                         *current.previous_analysis_results[-4:],
-                        current.codex_results[0],
+                        current.coding_agent_results[0],
                     ),
                     codex_results=(),
                     root_cause_evidence=(),

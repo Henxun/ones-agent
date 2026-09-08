@@ -69,6 +69,7 @@ def _assert_provenance_error_has_no_project_canary(
 def test_load_resolves_relative_paths_and_prefers_exact_mapping(tmp_path: Path) -> None:
     config = DeveloperWorkflowConfig.load(_write_config(tmp_path / "ones-dev.json"))
 
+    assert config.max_coding_agent_attempts == config.max_codex_attempts == 3
     assert config.run_root == (tmp_path / "runs").resolve()
     assert config.worktree_root == (tmp_path / "worktrees").resolve()
     assert config.mirror_root == (tmp_path / "mirrors").resolve()

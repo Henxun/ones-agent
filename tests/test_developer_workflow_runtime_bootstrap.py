@@ -133,6 +133,40 @@ def test_bootstrap_rejects_incompatible_generic_coding_agent_factory(
         bootstrapper.build(_active(tmp_path), _secrets())
 
 
+def test_claude_runtime_does_not_require_codex_credentials(tmp_path: Path) -> None:
+    from src.developer_workflow.claude_runner import ClaudeRunner
+    from src.developer_workflow.runtime_bootstrap import RuntimeBootstrapper
+
+    active = _active(tmp_path).validated_update(
+        runtime=_active(tmp_path).runtime.validated_update(coding_agent="claude"),
+        credential_kinds=(
+            SecretKind.ONES_EMAIL,
+            SecretKind.ONES_PASSWORD,
+            SecretKind.PROVIDER_TOKEN,
+        ),
+    )
+    secrets = RuntimeSecrets(
+        {
+            SecretKind.ONES_EMAIL: "stored@example.invalid",
+            SecretKind.ONES_PASSWORD: "STORED-PASSWORD",
+            SecretKind.PROVIDER_TOKEN: "STORED-PROVIDER-TOKEN",
+        }
+    )
+
+    handle = RuntimeBootstrapper(
+        private_root_preparer=lambda roots: tuple(Path(root) for root in roots),
+        sandbox_profile_validator=lambda profile, source, environment: None,
+        ambient_environment=lambda: {"PATH": os.environ.get("PATH", "")},
+    ).build(active, secrets)
+    try:
+        assert isinstance(
+            handle.orchestrator.requirement_flow.coding_agent.runner,
+            ClaudeRunner,
+        )
+    finally:
+        handle.close()
+
+
 def test_bootstrap_normalizes_committed_workflow_to_public_runtime_contracts(
     tmp_path: Path,
 ) -> None:
@@ -156,6 +190,14 @@ def test_bootstrap_normalizes_committed_workflow_to_public_runtime_contracts(
         )
         assert isinstance(
             handle.orchestrator.defect_flow.codex, CodexRequirementAdapter
+        )
+        assert (
+            handle.orchestrator.defect_flow.coding_agent
+            is handle.orchestrator.defect_flow.codex
+        )
+        assert (
+            handle.orchestrator.requirement_flow.coding_agent
+            is handle.orchestrator.requirement_flow.codex
         )
         assert type(handle.orchestrator.config.repositories[0]) is RepositoryMapping
         assert handle.orchestrator.config.repositories[0] == _workflow(

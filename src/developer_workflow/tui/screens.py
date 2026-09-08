@@ -214,8 +214,8 @@ def _ai_activity_renderable(activity: tuple[str, ...]) -> Text:
             label, _, value = line.partition(": ")
             rendered.append(label.upper() + "  ", style="bold yellow")
             rendered.append(value)
-        elif line == "Codex session started":
-            rendered.append("● Codex session started", style="bold blue")
+        elif line.endswith(" session started"):
+            rendered.append(f"● {line}", style="bold blue")
         elif line == "AI analysis started":
             rendered.append("● AI analysis started", style="bold cyan")
         elif line.startswith("AI analysis completed"):
@@ -544,11 +544,12 @@ class RunDetailPane(Vertical):
                 detail.ai_activity
             )
         else:
+            agent_label = detail.coding_agent_label or "Coding Agent"
             activity_text = "\n".join(
                 (
                     "Workflow started",
                     f"Current phase: {_workflow_phase(detail)}",
-                    "Preparing the workflow before the Codex session starts...",
+                    f"Preparing the workflow before the {agent_label} session starts...",
                     "AI activity will appear here as soon as it is available.",
                 )
             )
@@ -891,7 +892,7 @@ class _MappingWizardScreen(Screen[RunDetail | None]):
 
         # Do not await the workflow from the button handler.  Textual may defer
         # painting widget changes until that handler returns, which made the
-        # confirmation page appear frozen for the whole Codex run.
+        # confirmation page appear frozen for the whole coding-agent run.
         self._confirmation_task = asyncio.create_task(
             self._finish_confirmation(task, preview),
             name=f"tui-confirm-{preview.summary.run_id}",
@@ -2471,7 +2472,11 @@ class DashboardScreen(Screen[None]):
             and not workflow_running
             and detail.summary.state is WorkflowState.BLOCKED
             and detail.resume_state is WorkflowState.IMPLEMENTING
-            and detail.status_message == "Codex result format repair failed"
+            and detail.status_message
+            in {
+                "Codex result format repair failed",
+                "coding agent result format repair failed",
+            }
         )
         resumable = bool(
             detail
@@ -3173,7 +3178,11 @@ class DashboardScreen(Screen[None]):
             detail is None
             or detail.summary.state is not WorkflowState.BLOCKED
             or detail.resume_state is not WorkflowState.IMPLEMENTING
-            or detail.status_message != "Codex result format repair failed"
+            or detail.status_message
+            not in {
+                "Codex result format repair failed",
+                "coding agent result format repair failed",
+            }
         ):
             self._show_action_notice(_ACTION_UNAVAILABLE)
             return
@@ -3209,7 +3218,7 @@ class DashboardScreen(Screen[None]):
         self._set_analysis_actions(None)
         self._show_action_notice("Repair workflow started; see AI activity")
         # Modal dismissal callbacks run on Textual's message pump. Awaiting the
-        # entire repair here stalls UI messages even though Codex runs in a thread.
+        # Entire repair here stalls UI messages even though the agent runs in a thread.
         self._submit_workflow_task(
             run_id,
             "revise",

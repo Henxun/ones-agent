@@ -24,6 +24,22 @@
 `WorkflowRun.coding_agent_results`。持久化字段只能通过独立版本迁移更名，不能直接
 修改后导致已有任务不可加载。
 
+流程内部使用 `RequirementFlow.coding_agent`、`DefectFlow.coding_agent` 与
+`DeveloperWorkflowConfig.max_coding_agent_attempts`。历史构造参数 `codex` 和配置键
+`max_codex_attempts` 继续作为兼容入口，避免破坏部署配置和测试适配器。
+
+认证校验按当前 Provider 分派：选择 Claude Code 时不要求 Codex API 凭据；遗留
+Codex 配置可以继续存在但不会注入 Claude 进程。各 Provider 只接收自己的环境白名单。
+
+## 配置命令沙箱
+
+Coding Agent 的选择与配置命令的安全执行是两个独立边界。当前
+`SandboxCommandExecutor` 仍使用经过验证的 Codex CLI 沙箱执行测试配置中的命令；
+它不参与分析、修复或 Provider 会话选择，也不得读取所选 Provider 的凭据。选择
+Claude Code 因此不要求 Codex API 凭据，但运行配置测试时仍需要本机可用的 Codex
+沙箱可执行文件。未来替换命令沙箱应通过独立执行器协议完成，不应修改
+`CodingAgentRunner` 或绕过现有命令授权规则。
+
 自定义 `coding_agent_factory` 返回值按 `CodingAgentRunner` 协议进行结构化校验，
 不要求继承 Codex 或公共实现基类。旧 `codex_factory` 保留原有宽松兼容行为。
 

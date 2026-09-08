@@ -190,9 +190,9 @@ class DeveloperWorkflowOrchestrator:
             return self.defect_flow.execute(current)
 
     def ai_activity(self, run_id: str) -> tuple[str, ...]:
-        """Read sanitized Codex activity without changing workflow state."""
+        """Read sanitized coding-agent activity without changing workflow state."""
 
-        source = getattr(self.defect_flow.codex, "activity", None)
+        source = getattr(self.defect_flow.coding_agent, "activity", None)
         if not callable(source):
             return ()
         result = source(run_id)

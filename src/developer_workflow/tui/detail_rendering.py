@@ -46,6 +46,12 @@ MESSAGES = {
     "Codex process could not be started": "无法启动分析进程。",
     "Codex analysis exited unsuccessfully": "分析进程异常退出。",
     "Codex runtime safety validation failed": "分析运行环境未通过安全校验。",
+    "coding agent analysis returned invalid structured output": "分析结果未通过格式校验。",
+    "coding agent result format repair failed": "分析结果格式修复失败。",
+    "coding agent analysis timed out": "分析执行超时。",
+    "coding agent process could not be started": "无法启动分析进程。",
+    "coding agent analysis exited unsuccessfully": "分析进程异常退出。",
+    "coding agent runtime safety validation failed": "分析运行环境未通过安全校验。",
     "Repository safety validation failed": "代码仓库未通过安全校验。",
     "waiting for repository selection": "等待选择并确认代码仓库。",
     "Current checkout verified; no production repair or publication. See Review for limitations.":

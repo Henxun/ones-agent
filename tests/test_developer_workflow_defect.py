@@ -28,6 +28,10 @@ from src.developer_workflow.config import (
 )
 from src.developer_workflow.approval import ApprovalValidationError, validate_for_approval
 from src.developer_workflow.codex_runner import CodexOutputError, CodexRunner
+from src.developer_workflow.coding_agent_runner import (
+    CodingAgentOutputError,
+    CodingAgentTimeoutError,
+)
 from src.developer_workflow.command_utils import parse_command_argv
 from src.developer_workflow.contracts import (
     AcceptanceCoverage,
@@ -66,6 +70,26 @@ from src.developer_workflow.repository import build_run_branch_name
 from src.developer_workflow.state_store import ConcurrentRunUpdateError, FileRunStore, RunCorruptedError
 from src.developer_workflow.tui.models import RunDetail
 from src.services.ones_gateway import OnesGateway
+
+
+def test_provider_neutral_runtime_errors_create_provider_neutral_pause_reason() -> None:
+    blocked = defect_flow_module._safe_unexpected_block(
+        CodingAgentTimeoutError("Claude Code analysis timed out"),
+        WorkflowState.IMPLEMENTING,
+    )
+
+    assert blocked.reason == "coding agent analysis timed out"
+    assert blocked.resume_state is WorkflowState.IMPLEMENTING
+
+
+def test_generic_invalid_result_can_use_verified_snapshot_recovery() -> None:
+    error = CodingAgentOutputError(
+        "coding agent returned invalid structured output",
+        validation_hint="summary is required",
+        raw_output='{"changed_files": []}',
+    )
+
+    assert defect_flow_module._is_recoverable_structure_error(error)
 
 
 NOW = datetime(2026, 8, 10, tzinfo=UTC)
