@@ -112,6 +112,27 @@ def test_runtime_adapter_bundle_is_explicit_and_defaults_remain_production() -> 
     assert bundle.commenter_factory is None
 
 
+def test_bootstrap_rejects_incompatible_generic_coding_agent_factory(
+    tmp_path: Path,
+) -> None:
+    from src.developer_workflow.runtime_bootstrap import (
+        RuntimeAdapterBundle,
+        RuntimeBootstrapError,
+        RuntimeBootstrapper,
+    )
+
+    bootstrapper = RuntimeBootstrapper(
+        private_root_preparer=lambda roots: tuple(Path(root) for root in roots),
+        sandbox_profile_validator=lambda profile, source, environment: None,
+        adapters=RuntimeAdapterBundle(
+            coding_agent_factory=lambda *_args: object(),  # type: ignore[arg-type]
+        ),
+    )
+
+    with pytest.raises(RuntimeBootstrapError):
+        bootstrapper.build(_active(tmp_path), _secrets())
+
+
 def test_bootstrap_normalizes_committed_workflow_to_public_runtime_contracts(
     tmp_path: Path,
 ) -> None:
@@ -127,6 +148,12 @@ def test_bootstrap_normalizes_committed_workflow_to_public_runtime_contracts(
         from src.developer_workflow.requirement_flow import CodexRequirementAdapter
 
         assert type(handle.orchestrator.config) is DeveloperWorkflowConfig
+        assert handle.orchestrator.coding_agent is not None
+        assert handle.orchestrator.coding_agent.key == "codex"
+        assert handle.orchestrator.coding_agent.label == "Codex"
+        assert handle.orchestrator.defect_candidates.coding_agent == (
+            handle.orchestrator.coding_agent
+        )
         assert isinstance(
             handle.orchestrator.defect_flow.codex, CodexRequirementAdapter
         )

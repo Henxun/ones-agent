@@ -171,6 +171,18 @@ def overview(detail: RunDetail) -> DetailReport:
     sections.append(card("任务信息", fields(
         ("任务类型", "缺陷" if s.workflow_type.value == "defect" else "需求"),
         ("任务 ID", s.run_id), ("状态版本", str(s.version)),
+        (
+            "Coding Agent",
+            (
+                f"{detail.coding_agent_label} ({detail.coding_agent_key})"
+                if detail.coding_agent_label
+                else "旧任务未记录"
+            ),
+        ),
+        (
+            "Agent 版本",
+            detail.coding_agent_version or "尚未采集",
+        ),
         ("更新时间", s.updated_at.isoformat(sep=" ", timespec="seconds")),
         ("恢复阶段", state_name(detail.resume_state.value) if detail.resume_state else "无待恢复阶段"),
         ("审批指纹", detail.fingerprint or "尚未生成"),

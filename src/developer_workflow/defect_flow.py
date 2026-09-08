@@ -32,6 +32,7 @@ from .config import DeveloperWorkflowConfig
 from .contracts import (
     ApprovalPackage,
     BaselineRefreshRecord,
+    CodingAgentProvenance,
     CodexResult,
     CommandOutcome,
     CommandResult,
@@ -323,6 +324,7 @@ class DefectCandidateService:
     max_batches: int = 32
     max_total_canonical_bytes: int = 32 * 1024 * 1024
     clock: Callable[[], float] = time.monotonic
+    coding_agent: CodingAgentProvenance | None = None
     _batches: dict[str, _CandidateBatch] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -473,6 +475,7 @@ class DefectCandidateService:
             _sprint_id(source),
             source.assignee.id if source.assignee is not None else "",
             source.defect_id,
+            coding_agent=self.coding_agent,
         )
         return run.validated_update(defect=source, work_item_id=source.defect_id)
 

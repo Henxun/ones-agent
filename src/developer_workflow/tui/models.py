@@ -299,6 +299,9 @@ class RunDetail:
     draft_pr: bool = False
     can_defer_verification: bool = False
     baseline_refresh_history: tuple[str, ...] = ()
+    coding_agent_label: str = ""
+    coding_agent_key: str = ""
+    coding_agent_version: str = ""
 
     @classmethod
     def from_run(cls, run: WorkflowRun) -> RunDetail:
@@ -705,6 +708,25 @@ def run_detail_from_run(run: WorkflowRun) -> RunDetail:
         )
     return RunDetail(
         summary=RunSummary.from_run(run, activity=RunActivity.IDLE),
+        coding_agent_label=(
+            safe_tui_text(run.coding_agent.label, maximum=80)
+            if run.coding_agent is not None
+            else ""
+        ),
+        coding_agent_key=(
+            safe_tui_text(run.coding_agent.key, maximum=64)
+            if run.coding_agent is not None
+            else ""
+        ),
+        coding_agent_version=(
+            safe_tui_text(
+                run.coding_agent.version,
+                maximum=128,
+                allow_empty=True,
+            )
+            if run.coding_agent is not None
+            else ""
+        ),
         baseline_refresh_history=tuple(safe_tui_text(public_text(
             f"第 {index + 1} 轮 · " + {"preparing": "准备迁移", "migrated": "迁移完成，重新验证", "conflicts": "冲突交回修复", "failed": "迁移暂停"}[record.status]
             + f" · {record.failure_reason}\n" + "\n".join(

@@ -32,6 +32,7 @@ from src.developer_workflow.command_utils import parse_command_argv
 from src.developer_workflow.contracts import (
     AcceptanceCoverage,
     CodexResult,
+    CodingAgentProvenance,
     CommandOutcome,
     CommandResult,
     DefectAction,
@@ -209,7 +210,12 @@ async def test_select_requires_one_exact_uuid_or_key_and_freezes_selected_snapsh
     first = _defect("1" * 32, key="BUG-7", number="7")
     second = _defect("2" * 32, key="BUG-8", number="8")
     gateway = FakeGateway([first, second])
-    service = DefectCandidateService(gateway=gateway, issue_type_id="bug")
+    provenance = CodingAgentProvenance(key="claude", label="Claude Code")
+    service = DefectCandidateService(
+        gateway=gateway,
+        issue_type_id="bug",
+        coding_agent=provenance,
+    )
     candidates = await service.list_candidates("project", "sprint", "alice")
 
     first.description = "mutated after list"
@@ -220,6 +226,7 @@ async def test_select_requires_one_exact_uuid_or_key_and_freezes_selected_snapsh
     assert run.candidate_id == "1" * 32
     assert run.defect is not None
     assert run.defect.description == "Exporting an empty report crashes."
+    assert run.coding_agent == provenance
     assert gateway.calls and len(gateway.calls) == 1
 
     with pytest.raises(DefectCandidateError, match="exactly one"):

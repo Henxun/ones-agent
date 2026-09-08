@@ -13,9 +13,14 @@
 - `claude_runner.py::ClaudeRunner`：Claude Code 传输和 Claude 会话状态。
 - `runtime_bootstrap.py`：按选择键构造 Provider；部署适配器使用
   `RuntimeAdapterBundle.coding_agent_factory`，旧 `codex_factory` 仅为兼容保留。
+- `WorkflowRun.coding_agent`：保存任务创建时选择的 Agent 稳定键与显示名；旧任务为
+  `None` 并在界面标记为未记录。该字段不保存本机可执行路径、凭据或其它环境信息。
 
 `CodexRunner`、`CodexRequirementAdapter` 和原 Codex 异常名称继续导出，供旧调用方
 迁移；新代码应使用 Coding Agent 名称。
+
+自定义 `coding_agent_factory` 返回值按 `CodingAgentRunner` 协议进行结构化校验，
+不要求继承 Codex 或公共实现基类。旧 `codex_factory` 保留原有宽松兼容行为。
 
 ## 接入新的 Agent
 
@@ -27,3 +32,5 @@
    单/多仓库快照以及敏感信息清理测试。
 6. 不得因 Provider 不支持某项能力而跳过公共 Git、测试、审查或发布审批门禁。
 
+Agent 版本只有在可信执行边界能够采集时才写入；未知版本保持空值，不从路径、包装脚本
+或模型输出推断。配置切换只影响之后创建的任务，已创建任务继续展示其原始 Agent 身份。

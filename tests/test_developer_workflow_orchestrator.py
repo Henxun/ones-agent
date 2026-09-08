@@ -25,6 +25,7 @@ from src.developer_workflow.config import DeveloperWorkflowConfig, PublishingCon
 from src.developer_workflow.contracts import (
     AcceptanceCoverage,
     ApprovalPackage,
+    CodingAgentProvenance,
     CodexResult,
     CommandResult,
     PreparedWorktree,
@@ -369,6 +370,18 @@ def test_start_commands_create_exact_run_and_dispatch(tmp_path: Path) -> None:
     assert [call[0] for call in store.calls].count("create") == 2
     assert [call[0] for call in store.calls].count("operation_lock") == 2
     assert [call[0] for call in store.calls].count("load") == 2
+
+
+def test_start_requirement_records_selected_coding_agent(tmp_path: Path) -> None:
+    orchestrator, _, requirement, _, _ = _orchestrator(tmp_path)
+    orchestrator.coding_agent = CodingAgentProvenance(
+        key="claude", label="Claude Code"
+    )
+
+    run = orchestrator.start_requirement("REQ-agent")
+
+    assert run.coding_agent == orchestrator.coding_agent
+    assert requirement.calls == [run]
 
 
 def test_start_defect_selects_scoped_snapshot_before_create(tmp_path: Path) -> None:

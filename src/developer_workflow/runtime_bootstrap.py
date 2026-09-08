@@ -27,11 +27,14 @@ from .codex_runner import (
 )
 from .codex_runtime import CodexRuntimePreparer
 from .claude_runner import ClaudeRunner, safe_claude_environment
+from .coding_agents import coding_agent_definition
+from .coding_agent_runner import CodingAgentRunner
 from .config import (
     BUILTIN_WORKSPACE_PROFILE,
     DeveloperWorkflowConfig,
     SandboxPermissionProfileSource,
 )
+from .contracts import CodingAgentProvenance
 from .defect_flow import DefectCandidateService, DefectFlow
 from .ones_comment import OnesCommenter
 from .orchestrator import DeveloperWorkflowOrchestrator
@@ -113,12 +116,24 @@ class SandboxFactory(Protocol):
     ) -> object: ...
 
 
+class CodingAgentFactory(Protocol):
+    """Build one provider-neutral runner for the selected catalog key."""
+
+    def __call__(
+        self,
+        key: str,
+        run_root: Path,
+        repository: object,
+        environment_provider: Callable[[], dict[str, str]],
+    ) -> CodingAgentRunner: ...
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeAdapterBundle:
     """Explicit test/deployment adapters; ``None`` preserves production defaults."""
 
     gateway_factory: Callable[..., object] | None = None
-    coding_agent_factory: Callable[..., object] | None = None
+    coding_agent_factory: CodingAgentFactory | None = None
     # Deprecated compatibility seam for Codex-only test/deployment adapters.
     codex_factory: Callable[..., object] | None = None
     repository_factory: Callable[..., object] | None = None
@@ -581,9 +596,13 @@ class RuntimeBootstrapper:
                     coding_agent_backend = agent_builders[public.coding_agent]()
                 except KeyError:
                     raise ValueError("unsupported coding agent") from None
-            codex = (
+            if self.adapters.coding_agent_factory is not None and not isinstance(
+                coding_agent_backend, CodingAgentRunner
+            ):
+                raise ValueError("coding agent factory returned an incompatible runner")
+            requirement_agent = (
                 CodingAgentRequirementAdapter(coding_agent_backend)
-                if isinstance(coding_agent_backend, GuardedCodingAgentRunner)
+                if isinstance(coding_agent_backend, CodingAgentRunner)
                 else coding_agent_backend
             )
             test_runner = (
@@ -600,14 +619,23 @@ class RuntimeBootstrapper:
             )
             group_workspace = RepositoryGroupWorkspace(repository)
             requirement_flow = RequirementFlow(
-                store, gateway, workflow, repository, codex, test_runner,
+                store, gateway, workflow, repository, requirement_agent, test_runner,
                 group_workspace=group_workspace,
             )
             defect_flow = DefectFlow(
-                store, workflow, repository, codex, test_runner,
+                store, workflow, repository, requirement_agent, test_runner,
                 group_workspace=group_workspace,
             )
-            candidates = DefectCandidateService(gateway, settings.issue_type_id)
+            agent_definition = coding_agent_definition(public.coding_agent)
+            agent_provenance = CodingAgentProvenance(
+                key=agent_definition.key,
+                label=agent_definition.label,
+            )
+            candidates = DefectCandidateService(
+                gateway,
+                settings.issue_type_id,
+                coding_agent=agent_provenance,
+            )
             pr_arguments = {
                 "provider": workflow.publishing.provider.value,
                 "provider_host": public.provider_host,
@@ -634,7 +662,13 @@ class RuntimeBootstrapper:
                 public.provider_host,
             )
             orchestrator = DeveloperWorkflowOrchestrator(
-                store, requirement_flow, defect_flow, publisher, workflow, candidates
+                store,
+                requirement_flow,
+                defect_flow,
+                publisher,
+                workflow,
+                candidates,
+                coding_agent=agent_provenance,
             )
 
             def close() -> None:

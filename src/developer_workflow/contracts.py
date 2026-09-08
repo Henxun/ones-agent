@@ -1166,11 +1166,20 @@ class BaselineRefreshRecord(WorkflowModel):
     occurred_at: datetime = Field(default_factory=utc_now)
 
 
+class CodingAgentProvenance(WorkflowModel):
+    """Stable, non-secret identity of the agent selected for a workflow run."""
+
+    key: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
+    label: str = Field(min_length=1, max_length=80)
+    version: str = Field(default="", max_length=128)
+
+
 class WorkflowRun(WorkflowModel):
     verification_plan: tuple[VerificationTask, ...] = Field(default=())
     verification_records: tuple[VerificationRecord, ...] = Field(default=())
     run_id: str
     type: WorkflowType
+    coding_agent: CodingAgentProvenance | None = None
     repository_model_version: StrictInt = 1
     state: WorkflowState = WorkflowState.CREATED
     version: StrictInt = 0
@@ -1301,12 +1310,19 @@ class WorkflowRun(WorkflowModel):
         return self.type
 
     @classmethod
-    def new(cls, workflow_type: WorkflowType | str, work_item_id: str) -> WorkflowRun:
+    def new(
+        cls,
+        workflow_type: WorkflowType | str,
+        work_item_id: str,
+        *,
+        coding_agent: CodingAgentProvenance | None = None,
+    ) -> WorkflowRun:
         _non_empty(work_item_id, "work_item_id")
         now = utc_now()
         return cls(
             run_id=uuid.uuid4().hex,
             type=workflow_type,
+            coding_agent=coding_agent,
             repository_model_version=2,
             state=WorkflowState.CREATED,
             version=0,
@@ -1323,6 +1339,8 @@ class WorkflowRun(WorkflowModel):
         iteration_id: str,
         assignee_id: str,
         candidate_id: str,
+        *,
+        coding_agent: CodingAgentProvenance | None = None,
     ) -> WorkflowRun:
         for name, value in (
             ("project_id", project_id),
@@ -1335,6 +1353,7 @@ class WorkflowRun(WorkflowModel):
         return cls(
             run_id=uuid.uuid4().hex,
             type=WorkflowType.DEFECT,
+            coding_agent=coding_agent,
             repository_model_version=2,
             state=WorkflowState.CREATED,
             version=0,

@@ -11,6 +11,7 @@ import unicodedata
 from .approval import issue_approval
 from .config import DeveloperWorkflowConfig, RepositoryMappingNotFound
 from .contracts import (
+    CodingAgentProvenance,
     DefectAction,
     PublicationResult,
     WorkflowRun,
@@ -107,10 +108,15 @@ class DeveloperWorkflowOrchestrator:
     publisher: Publisher
     config: DeveloperWorkflowConfig
     defect_candidates: DefectCandidateService
+    coding_agent: CodingAgentProvenance | None = None
 
     def start_requirement(self, requirement_id: str) -> WorkflowRun:
         created = self.store.create(
-            WorkflowRun.new(WorkflowType.REQUIREMENT, requirement_id)
+            WorkflowRun.new(
+                WorkflowType.REQUIREMENT,
+                requirement_id,
+                coding_agent=self.coding_agent,
+            )
         )
         with self.store.operation_lock(created.run_id, "orchestrate"):
             current = self.store.load(created.run_id)
