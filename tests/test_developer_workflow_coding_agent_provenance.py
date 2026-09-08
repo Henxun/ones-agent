@@ -2,11 +2,25 @@ from __future__ import annotations
 
 from src.developer_workflow.contracts import (
     CodingAgentProvenance,
+    CodingAgentResult,
+    CodexResult,
     WorkflowRun,
     WorkflowType,
 )
 from src.developer_workflow.tui.detail_rendering import overview
 from src.developer_workflow.tui.models import RunDetail
+
+
+def test_provider_neutral_result_keeps_legacy_type_and_wire_field_compatible() -> None:
+    result = CodingAgentResult(summary="reviewed")
+    run = WorkflowRun.new(WorkflowType.REQUIREMENT, "REQ-1").validated_update(
+        codex_results=(result,)
+    )
+
+    assert CodexResult is CodingAgentResult
+    assert run.coding_agent_results == (result,)
+    assert "codex_results" in run.model_dump(mode="json")
+    assert "coding_agent_results" not in run.model_dump(mode="json")
 
 
 def test_new_run_records_selected_coding_agent_without_local_path() -> None:

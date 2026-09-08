@@ -815,7 +815,9 @@ class AcceptanceCoverage(WorkflowModel):
         return self
 
 
-class CodexResult(WorkflowModel):
+class CodingAgentResult(WorkflowModel):
+    """Provider-neutral structured result returned by a coding agent."""
+
     summary: str = ""
     changed_files: tuple[str, ...] = Field(default_factory=tuple)
     repository_changes: tuple[RepositoryChangeClaim, ...] = Field(default_factory=tuple)
@@ -855,6 +857,11 @@ class CodexResult(WorkflowModel):
         if value and value not in {"low", "medium", "high"}:
             raise ValueError("risk_level must be low, medium, or high")
         return value
+
+
+# Compatibility alias for integrations and persisted code written before
+# multiple coding-agent providers were supported.
+CodexResult = CodingAgentResult
 
 
 class StateEvent(WorkflowModel):
@@ -988,12 +995,12 @@ class ApprovalPackage(WorkflowModel):
     @field_validator("impact_scope")
     @classmethod
     def validate_defect_impact_scope(cls, paths: tuple[str, ...]) -> tuple[str, ...]:
-        return CodexResult.validate_impact_scope(paths)
+        return CodingAgentResult.validate_impact_scope(paths)
 
     @field_validator("risk_level")
     @classmethod
     def validate_defect_risk_level(cls, value: str) -> str:
-        return CodexResult.validate_risk_level(value)
+        return CodingAgentResult.validate_risk_level(value)
 
     @model_validator(mode="after")
     def validate_repository_mode(self) -> ApprovalPackage:
@@ -1156,7 +1163,7 @@ class BaselineRefreshRecord(WorkflowModel):
     source_tests: tuple[CommandResult, ...] = ()
     source_pre_fix_tests: tuple[CommandResult, ...] = ()
     source_pre_fix_snapshot: RepositorySnapshot | None = None
-    source_review: CodexResult | None = None
+    source_review: CodingAgentResult | None = None
     source_approval: ApprovalPackage | None = None
     source_verification_records: tuple[VerificationRecord, ...] = ()
     destinations: tuple[RepositoryRunEvidence, ...] = ()
@@ -1215,10 +1222,10 @@ class WorkflowRun(WorkflowModel):
     defect_action: DefectAction = DefectAction.ANALYZE_AND_REPAIR
     analysis_generation: StrictInt = 0
     analysis_solution_accepted: StrictBool = False
-    previous_analysis_results: tuple[CodexResult, ...] = Field(default_factory=tuple)
+    previous_analysis_results: tuple[CodingAgentResult, ...] = Field(default_factory=tuple)
     root_cause_evidence: tuple[RootCauseEvidence, ...] = Field(default_factory=tuple)
     investigation_suggestions: tuple[str, ...] = Field(default_factory=tuple)
-    defect_preflight: CodexResult | None = None
+    defect_preflight: CodingAgentResult | None = None
     behavior_before: str = ""
     behavior_after: str = ""
     impact_scope: tuple[str, ...] = Field(default_factory=tuple)
@@ -1228,10 +1235,11 @@ class WorkflowRun(WorkflowModel):
     head_commit: str = ""
     branch: str = ""
     worktree_path: str = ""
-    codex_results: tuple[CodexResult, ...] = Field(default_factory=tuple)
+    # Persisted field name retained for backward-compatible task JSON.
+    codex_results: tuple[CodingAgentResult, ...] = Field(default_factory=tuple)
     changed_files: tuple[str, ...] = Field(default_factory=tuple)
     test_results: tuple[CommandResult, ...] = Field(default_factory=tuple)
-    review: CodexResult | None = None
+    review: CodingAgentResult | None = None
     approval: ApprovalPackage | None = None
     publication: PublicationResult = Field(default_factory=PublicationResult)
     group_publication: MultiRepositoryPublicationResult | None = None
@@ -1308,6 +1316,12 @@ class WorkflowRun(WorkflowModel):
         """Compatibility name used by workflow dispatchers."""
 
         return self.type
+
+    @property
+    def coding_agent_results(self) -> tuple[CodingAgentResult, ...]:
+        """Provider-neutral read name for the historical persisted field."""
+
+        return self.codex_results
 
     @classmethod
     def new(
@@ -1419,6 +1433,8 @@ class WorkflowRun(WorkflowModel):
 __all__ = [
     "ApprovalPackage",
     "AcceptanceCoverage",
+    "CodingAgentProvenance",
+    "CodingAgentResult",
     "CodexResult",
     "CommandResult",
     "CommandOutcome",

@@ -6,17 +6,12 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from .contracts import (
-    CodexResult,
+    CodingAgentResult,
     PreparedWorktree,
     RepositoryGroupMapping,
     RepositoryMapping,
 )
 from .repository_group import PreparedRepository
-
-
-# The persisted wire contract keeps its historical name. New provider-neutral
-# code should use this alias until a versioned schema migration is introduced.
-CodingAgentResult = CodexResult
 
 
 class CodingAgentRunnerError(RuntimeError):

@@ -607,8 +607,8 @@ def run_detail_from_run(run: WorkflowRun) -> RunDetail:
 
     review_count = len(approval.review) if approval is not None else 0
     analysis_review: tuple[str, ...] = ()
-    if run.defect_action is DefectAction.ANALYZE and run.codex_results:
-        result = run.codex_results[0]
+    if run.defect_action is DefectAction.ANALYZE and run.coding_agent_results:
+        result = run.coding_agent_results[0]
         defect = run.defect
         defect_label = run.work_item_id
         if defect is not None:
@@ -775,8 +775,8 @@ def run_detail_from_run(run: WorkflowRun) -> RunDetail:
         risk_count=(
             len(approval.risks)
             if approval is not None
-            else len(run.codex_results[0].risks)
-            if run.defect_action is DefectAction.ANALYZE and run.codex_results
+            else len(run.coding_agent_results[0].risks)
+            if run.defect_action is DefectAction.ANALYZE and run.coding_agent_results
             else 0
         ),
         unresolved_count=(
@@ -787,8 +787,8 @@ def run_detail_from_run(run: WorkflowRun) -> RunDetail:
                 + len(run.review.review_external_validation)
             )
             if run.review is not None
-            else len(run.codex_results[0].unresolved_items)
-            if run.defect_action is DefectAction.ANALYZE and run.codex_results
+            else len(run.coding_agent_results[0].unresolved_items)
+            if run.defect_action is DefectAction.ANALYZE and run.coding_agent_results
             else 0
         ),
         status_message={

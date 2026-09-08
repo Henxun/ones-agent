@@ -19,6 +19,11 @@
 `CodexRunner`、`CodexRequirementAdapter` 和原 Codex 异常名称继续导出，供旧调用方
 迁移；新代码应使用 Coding Agent 名称。
 
+结构化结果的主类型为 `CodingAgentResult`，`CodexResult` 是兼容别名。任务 JSON
+暂时继续使用 `codex_results` 字段以保证旧任务可恢复；新读取代码使用
+`WorkflowRun.coding_agent_results`。持久化字段只能通过独立版本迁移更名，不能直接
+修改后导致已有任务不可加载。
+
 自定义 `coding_agent_factory` 返回值按 `CodingAgentRunner` 协议进行结构化校验，
 不要求继承 Codex 或公共实现基类。旧 `codex_factory` 保留原有宽松兼容行为。
 

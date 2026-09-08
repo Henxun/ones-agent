@@ -46,11 +46,17 @@ _T = TypeVar("_T")
 
 def collect_defect_risks(run: WorkflowRun) -> tuple[str, ...]:
     """Keep reviewable limitations identical at preview and publication time."""
-    results = (*run.codex_results, *((run.review,) if run.review is not None else ()))
+    results = (
+        *run.coding_agent_results,
+        *((run.review,) if run.review is not None else ()),
+    )
     return tuple(dict.fromkeys((
         *(risk for result in results for risk in result.risks),
-        *(f"Implementation follow-up: {note}"
-          for result in run.codex_results[2:] for note in result.unresolved_items),
+        *(
+            f"Implementation follow-up: {note}"
+            for result in run.coding_agent_results[2:]
+            for note in result.unresolved_items
+        ),
         f"risk_level={run.risk_level}",
     )))
 

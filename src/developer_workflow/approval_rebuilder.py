@@ -102,11 +102,11 @@ class WorkflowApprovalRebuilder:
             review.review_findings or ((review.summary,) if review.summary else ())
         )
         risks = tuple(dict.fromkeys(
-            item for result in (*run.codex_results, *((review,) if review else ()))
+            item for result in (*run.coding_agent_results, *((review,) if review else ()))
             for item in result.risks
         ))
         evidence = tuple(dict.fromkeys(
-            item for result in (*run.codex_results, *((review,) if review else ()))
+            item for result in (*run.coding_agent_results, *((review,) if review else ()))
             for item in result.evidence
         ))
         wiki = tuple(self._wiki_snapshot(item) for item in run.wiki_snapshots)
@@ -261,11 +261,11 @@ class WorkflowApprovalRebuilder:
             review.review_findings or ((review.summary,) if review.summary else ())
         )
         risks = tuple(dict.fromkeys(
-            item for result in (*run.codex_results, *((review,) if review else ()))
+            item for result in (*run.coding_agent_results, *((review,) if review else ()))
             for item in result.risks
         ))
         evidence_text = tuple(dict.fromkeys(
-            item for result in (*run.codex_results, *((review,) if review else ()))
+            item for result in (*run.coding_agent_results, *((review,) if review else ()))
             for item in result.evidence
         ))
         wiki = tuple(self._wiki_snapshot(item) for item in run.wiki_snapshots)
