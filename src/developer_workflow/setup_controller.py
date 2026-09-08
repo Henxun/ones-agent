@@ -737,6 +737,7 @@ class SetupController:
             ),
             codex_auth_mode=candidate.codex_auth_mode,
             codex_home=candidate.codex_home,
+            coding_agent=candidate.coding_agent,
         )
         if candidate != expected:
             raise ValueError
@@ -821,6 +822,7 @@ class SetupController:
                 "provider": active.workflow.publishing.provider.value,
                 "codex_auth_mode": active.runtime.codex_auth_mode,
                 "codex_home": str(active.runtime.codex_home or ""),
+                "coding_agent": active.runtime.coding_agent,
             }
             self._results.clear()
             self._review_confirmed = False
@@ -897,6 +899,41 @@ class SetupController:
             publishing["provider"] = fields["provider"]
             workflow.publishing = type(workflow.publishing).model_validate(publishing)
             self.apply_workflow(workflow, changed_step=SetupStep.PROVIDER)
+            for step in self.STEPS:
+                if step is SetupStep.REVIEW:
+                    break
+                result = await self.test_step(step, self._inline_probe(step))
+                if result.status is not ValidationStatus.PASSED:
+                    raise InlineValidationError(step, result.category)
+            self.confirm_review()
+        except BaseException:
+            self._clear_transient_secrets()
+            raise
+
+    async def prepare_inline_coding_agent(self, coding_agent: str) -> None:
+        """Select a supported local coding backend without exposing secrets."""
+        if coding_agent not in {"codex", "claude"}:
+            raise SetupActionError("coding agent configuration is invalid")
+        await asyncio.to_thread(self.load_active_public_draft)
+        document = await asyncio.to_thread(
+            self._store.load_or_empty, profile_id=self._profile_id
+        )
+        if document.active is None or document.activation_owner_generation is not None:
+            raise SetupActionError("active configuration is unavailable")
+        retained = await asyncio.to_thread(self._store.read_active_secrets, document)
+        try:
+            for kind, value in retained.values.items():
+                self.set_secret(kind, value)
+            current = self.draft.runtime
+            if current is None:
+                raise SetupActionError("active configuration is unavailable")
+            updated = RuntimePublicConfig.model_validate(
+                current.model_copy(update={"coding_agent": coding_agent}).model_dump(
+                    mode="python", round_trip=True
+                )
+            )
+            self.apply_runtime(updated, changed_step=SetupStep.PRIVATE_PATHS)
+            self._runtime_fields["coding_agent"] = coding_agent
             for step in self.STEPS:
                 if step is SetupStep.REVIEW:
                     break

@@ -75,6 +75,10 @@ async def test_configuration_tabs_list_click_details_and_save(size):
         assert dashboard.query_one("#inline-ones-base_url", Input).visible
         assert not dashboard.query("#settings-ones #nav-runtime-setup")
         dashboard.action_next_tab()
+        assert tabs.active == "settings-provider"
+        dashboard.action_next_tab()
+        assert tabs.active == "settings-agent"
+        dashboard.action_next_tab()
         assert tabs.active == "settings-nodes"
         dashboard.action_next_tab()
         assert tabs.active == "settings-runtime"

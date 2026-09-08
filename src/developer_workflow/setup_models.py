@@ -262,6 +262,7 @@ class RuntimePublicConfig(SetupModel):
     git_author_email: StrictStr
     codex_auth_mode: Literal["credential", "file"]
     codex_home: Path | None = None
+    coding_agent: Literal["codex", "claude"] = "codex"
 
     @field_validator(
         "ones_team_id",

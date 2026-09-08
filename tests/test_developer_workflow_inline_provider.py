@@ -70,7 +70,7 @@ async def test_restored_configuration_is_visible_on_first_mount(tab, monkeypatch
         assert mounted == [(False, True, tab)]
         app.screen.query_one("#configuration-tabs", TabbedContent).active = "settings-provider"
         app.screen.action_next_tab()
-        assert app.screen.query_one("#configuration-tabs", TabbedContent).active == "settings-nodes"
+        assert app.screen.query_one("#configuration-tabs", TabbedContent).active == "settings-agent"
 
 
 @pytest.mark.parametrize("base", ["https://git.example.test/api/v4", "https://git.example.test/gitlab/api/v4/"])

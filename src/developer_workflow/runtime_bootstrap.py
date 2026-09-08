@@ -25,6 +25,7 @@ from .codex_runner import (
     validate_codex_auth_source,
 )
 from .codex_runtime import CodexRuntimePreparer
+from .claude_runner import ClaudeRunner, safe_claude_environment
 from .config import (
     BUILTIN_WORKSPACE_PROFILE,
     DeveloperWorkflowConfig,
@@ -473,7 +474,7 @@ class RuntimeBootstrapper:
                 }
             )
             provider_token = validated_secrets.get(SecretKind.PROVIDER_TOKEN, "")
-            codex_environment = self._codex_environment(public, secrets)
+            agent_environment = self._coding_agent_environment(public, secrets)
             git_credentials = {
                 name: value
                 for kind, name in _GIT_SECRET_ENV.items()
@@ -486,7 +487,8 @@ class RuntimeBootstrapper:
                 "GIT_COMMITTER_EMAIL": public.git_author_email,
             }
             validate_git_identity_environment(identity_values)
-            validate_codex_auth_source(codex_environment)
+            if public.coding_agent == "codex":
+                validate_codex_auth_source(agent_environment)
             publishing_enabled = bool(provider_token) and self.adapters.pr_factory is None
             for mapping in (
                 *workflow.repositories,
@@ -506,7 +508,7 @@ class RuntimeBootstrapper:
             self._validate_sandbox_capability(
                 persisted_profile,
                 persisted_source,
-                _preflight_environment(codex_environment),
+                _preflight_environment(agent_environment),
             )
             run_root, mirror_root, worktree_root = self.private_root_preparer(
                 (workflow.run_root, workflow.mirror_root, workflow.worktree_root)
@@ -535,21 +537,29 @@ class RuntimeBootstrapper:
                 if self.adapters.gateway_factory is None
                 else self.adapters.gateway_factory(settings)
             )
-            environment_provider = lambda: dict(codex_environment)
-            codex_backend = (
-                CodexRunner(
+            environment_provider = lambda: dict(agent_environment)
+            if public.coding_agent == "claude":
+                codex_backend = ClaudeRunner(
                     run_root,
                     repository,
-                    command_resolver=lambda: resolve_codex_command(
-                        _prepare=self.codex_runtime_preparer.prepare_verified
-                    ),
                     environment_provider=environment_provider,
+                    sandbox_mode_override="danger-full-access",
                 )
-                if self.adapters.codex_factory is None
-                else self.adapters.codex_factory(
-                    run_root, repository, environment_provider
+            else:
+                codex_backend = (
+                    CodexRunner(
+                        run_root,
+                        repository,
+                        command_resolver=lambda: resolve_codex_command(
+                            _prepare=self.codex_runtime_preparer.prepare_verified
+                        ),
+                        environment_provider=environment_provider,
+                    )
+                    if self.adapters.codex_factory is None
+                    else self.adapters.codex_factory(
+                        run_root, repository, environment_provider
+                    )
                 )
-            )
             codex = (
                 CodexRequirementAdapter(codex_backend)
                 if isinstance(codex_backend, CodexRunner)
@@ -643,10 +653,12 @@ class RuntimeBootstrapper:
                 "production runtime configuration is incomplete"
             ) from None
 
-    def _codex_environment(
+    def _coding_agent_environment(
         self, public: RuntimePublicConfig, secrets: RuntimeSecrets
     ) -> dict[str, str]:
         ambient = self.ambient_environment()
+        if public.coding_agent == "claude":
+            return safe_claude_environment(ambient)
         environment = {
             key: value
             for key, value in ambient.items()

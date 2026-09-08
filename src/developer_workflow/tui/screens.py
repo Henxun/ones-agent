@@ -67,6 +67,7 @@ from .verification_modal import VerificationModal, VerificationSubmission
 from .verification_settings import VerificationNodesPane
 from .ones_settings import OnesSettingsPane
 from .provider_settings import ProviderSettingsPane
+from .coding_agent_settings import CodingAgentSettingsPane
 from . import detail_rendering
 from ..verification import public_text
 
@@ -2413,6 +2414,8 @@ class DashboardScreen(Screen[None]):
                         yield OnesSettingsPane()
                     with TabPane("GitHub / GitLab", id="settings-provider"):
                         yield ProviderSettingsPane()
+                    with TabPane("Coding Agent", id="settings-agent"):
+                        yield CodingAgentSettingsPane()
                     with TabPane("验证节点", id="settings-nodes"):
                         yield VerificationNodesPane(self._controller, self._supervisor)
                     with TabPane("运行信息", id="settings-runtime"):
@@ -2739,7 +2742,10 @@ class DashboardScreen(Screen[None]):
 
     def _step_configuration_tab(self, step: int) -> None:
         tabs = self.query_one("#configuration-tabs", TabbedContent)
-        names = ("settings-ones", "settings-provider", "settings-nodes", "settings-runtime")
+        names = (
+            "settings-ones", "settings-provider", "settings-agent",
+            "settings-nodes", "settings-runtime",
+        )
         tabs.active = names[(names.index(tabs.active) + step) % len(names)]
 
     def rebind_runtime(self, controller: TuiController, supervisor: RunTaskSupervisor) -> None:
@@ -2763,6 +2769,7 @@ class DashboardScreen(Screen[None]):
         self._set_active_navigation("nav-settings")
         self.run_worker(self.query_one(OnesSettingsPane).load())
         self.run_worker(self.query_one(ProviderSettingsPane).load())
+        self.run_worker(self.query_one(CodingAgentSettingsPane).load())
         if self.query_one("#configuration-tabs", TabbedContent).active == "settings-nodes":
             self.run_worker(self.query_one(VerificationNodesPane).load_nodes())
 
@@ -2771,6 +2778,8 @@ class DashboardScreen(Screen[None]):
         event.stop()
         if event.pane.id == "settings-nodes":
             await self.query_one(VerificationNodesPane).load_nodes()
+        elif event.pane.id == "settings-agent":
+            await self.query_one(CodingAgentSettingsPane).load()
 
     def action_show_runs(self) -> None:
         self.query_one("#settings-page").display = False

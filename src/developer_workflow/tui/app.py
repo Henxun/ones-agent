@@ -17,6 +17,7 @@ from textual.widgets import Button
 from .controller import TuiController
 from ..setup_models import OnesProbePublicConfig
 from ..setup_controller import InlineValidationError
+from ..coding_agents import discover_coding_agents
 from .models import RunActivity
 from .screens import DashboardScreen, HelpScreen, SettingsView
 from .runtime_session import TuiRuntimeSession
@@ -680,6 +681,24 @@ class DeveloperWorkflowTuiApp(App[None]):
             raise RuntimeError("editable runtime is unavailable")
         await self._begin_reconfigure(inline_fields=fields, inline_credentials=credentials, inline_module="provider")
 
+    async def read_inline_coding_agent(self) -> str:
+        controller = self._new_setup_controller()
+        try:
+            await asyncio.to_thread(controller.load_active_public_draft)
+            return controller.runtime_public_fields.get("coding_agent", "codex")
+        finally:
+            await controller.aclose()
+
+    async def save_inline_coding_agent(self, coding_agent: str) -> None:
+        available = {item.key for item in discover_coding_agents() if item.usable}
+        if coding_agent not in available:
+            raise RuntimeError("selected coding agent is unavailable")
+        if self.runtime_session is None:
+            raise RuntimeError("editable runtime is unavailable")
+        await self._begin_reconfigure(
+            inline_fields=coding_agent, inline_module="coding-agent"
+        )
+
     async def _begin_reconfigure(self, *, inline_fields=None, inline_credentials=None, inline_module="ones") -> None:
         """Close the stable runtime completely before constructing setup UI."""
 
@@ -737,8 +756,16 @@ class DeveloperWorkflowTuiApp(App[None]):
                     else:
                         failure_notice = "配置未应用，已恢复原配置；请检查必填项及连接后重试。"
                         try:
-                            prepare = controller.prepare_inline_provider if inline_module == "provider" else controller.prepare_inline_ones
-                            await prepare(inline_fields, inline_credentials or {})
+                            if inline_module == "provider":
+                                await controller.prepare_inline_provider(
+                                    inline_fields, inline_credentials or {}
+                                )
+                            elif inline_module == "coding-agent":
+                                await controller.prepare_inline_coding_agent(inline_fields)
+                            else:
+                                await controller.prepare_inline_ones(
+                                    inline_fields, inline_credentials or {}
+                                )
                             handle = await controller.save_and_activate()
                             saved = True
                         except Exception as error:
@@ -750,7 +777,10 @@ class DeveloperWorkflowTuiApp(App[None]):
                             await self._remove_dashboard()
                             await self._show_setup()
                         else:
-                            self._restore_settings_tab = "settings-provider" if inline_module == "provider" else "settings-ones"
+                            self._restore_settings_tab = {
+                                "provider": "settings-provider",
+                                "coding-agent": "settings-agent",
+                            }.get(inline_module, "settings-ones")
                             try:
                                 await self._finish_setup(handle)
                             finally:
