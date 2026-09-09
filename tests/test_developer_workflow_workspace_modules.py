@@ -190,7 +190,12 @@ async def test_workspace_tabs_footer_and_requirement_scope(size):
         await pilot.pause()
         screen = app.screen
         tabs = screen.query_one("#workspace-modules", TabbedContent)
-        assert len(screen.query("TabPane")) == 4
+        module_body = screen.query_one("#workspace-defects-tab .workspace-module-body")
+        assert module_body.region.width >= screen.region.width - 6
+        assert screen.query_one("#workspace-detail-footer").region.width == screen.region.width
+        assert len(screen.query("TabPane")) == 5
+        assert screen.query_one("#workspace-repositories-tab").query_one("#workspace-repositories")
+        assert not screen.query_one("#workspace-defects-tab").query("#workspace-repositories")
         assert screen.query_one("#workspace-detail-back", Button).region.bottom <= size[1]
         tabs.active = "workspace-schedules-tab"
         await pilot.pause()

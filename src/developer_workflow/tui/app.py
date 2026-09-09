@@ -7,9 +7,10 @@ import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from textual import on
+from textual import events, on
 from textual.app import App
 from textual.binding import Binding
+from textual.geometry import Size
 from textual.message import Message
 from textual.timer import Timer
 from textual.widgets import Button
@@ -83,6 +84,11 @@ class DeveloperWorkflowTuiApp(App[None]):
         poll_interval: float = 2.0,
         close_timeout: float = 5.0,
     ) -> None:
+        # On Windows Terminal, Rich may briefly keep reporting the pre-maximize
+        # console dimensions after Textual has already received the authoritative
+        # Resize event. ScreenResume reads ``app.size`` again, so without retaining
+        # the event size a newly pushed screen can collapse back to the old width.
+        self._reported_terminal_size: Size | None = None
         if (
             isinstance(poll_interval, bool)
             or not isinstance(poll_interval, (int, float))
@@ -156,6 +162,16 @@ class DeveloperWorkflowTuiApp(App[None]):
                 controller, max_concurrency, sink
             )
             self._bind_runtime_session(self.runtime_session)
+
+    @property
+    def size(self) -> Size:
+        """Use the latest terminal resize event across screen transitions."""
+
+        return self._reported_terminal_size or super().size
+
+    async def _on_resize(self, event: events.Resize) -> None:
+        self._reported_terminal_size = event.size
+        await super()._on_resize(event)
 
     async def on_mount(self) -> None:
         async with self._transition_lock:

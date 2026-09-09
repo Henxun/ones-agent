@@ -89,7 +89,7 @@ Screen {
 #action-bar {
     height: 3;
     width: 100%;
-    padding: 0 1;
+    padding: 0 5 0 1;
 }
 
 #action-bar Button {
@@ -314,10 +314,12 @@ WorkspaceDeleteConfirmation > VerticalScroll {
 #workspace-create-screen,
 #workspace-detail-screen {
     layout: vertical;
+    width: 100%;
 }
 
 #workspace-create-body,
 #workspace-detail-body {
+    width: 100%;
     height: 1fr;
     padding: 1 2;
 }
@@ -334,8 +336,22 @@ WorkspaceDeleteConfirmation > VerticalScroll {
     padding: 0 1 1 1;
 }
 
+#workspace-repositories {
+    height: auto;
+}
+
+.workspace-repository-item {
+    height: auto;
+    border: round $primary;
+    background: $surface;
+    color: $text;
+    padding: 1 2;
+    margin-bottom: 1;
+}
+
 #workspace-modules, #workspace-modules > ContentSwitcher,
 #workspace-modules TabPane {
+    width: 100%;
     height: 1fr;
 }
 
@@ -344,7 +360,10 @@ WorkspaceDeleteConfirmation > VerticalScroll {
     background: $surface;
 }
 
-.workspace-module-body { height: 1fr; }
+.workspace-module-body {
+    width: 100%;
+    height: 1fr;
+}
 .workspace-module-title {
     height: auto;
     text-style: bold;
@@ -353,8 +372,176 @@ WorkspaceDeleteConfirmation > VerticalScroll {
 }
 .workspace-module-description {
     height: auto;
+    color: $text-muted;
     margin-bottom: 1;
 }
+
+.workspace-defect-filter-card {
+    width: 100%;
+    height: auto;
+    border: round $primary;
+    background: $boost;
+    padding: 0 4 0 1;
+    margin-bottom: 1;
+}
+
+.workspace-defect-filter-label {
+    width: 8;
+    height: 3;
+    color: $text-muted;
+    content-align: left middle;
+}
+
+#workspace-defect-assignee {
+    width: 1fr;
+    margin: 0;
+}
+
+.workspace-defect-filter-toolbar {
+    width: 100%;
+    height: 3;
+}
+
+.workspace-defect-actions {
+    height: 3;
+}
+
+#workspace-detail-body .workspace-defect-filter-toolbar Button {
+    height: 3;
+    margin: 0 0 0 1;
+}
+
+#workspace-defect-status-filter-button {
+    width: 14;
+}
+#workspace-reload-defect-options { width: 8; }
+#workspace-query-defects { width: 16; }
+
+#workspace-defect-status {
+    width: 1fr;
+    height: 2;
+    color: $text-muted;
+    content-align: right middle;
+    padding: 0 1;
+}
+
+.workspace-defect-results-header {
+    height: 2;
+    margin: 0 1;
+}
+
+.workspace-defect-results-heading {
+    width: auto;
+    height: 2;
+    text-style: bold;
+    color: $accent;
+    content-align: left middle;
+}
+
+#workspace-defect-results {
+    height: auto;
+}
+
+.workspace-defect-empty {
+    height: 5;
+    color: $text-muted;
+    border: round $panel;
+    background: $surface;
+    content-align: center middle;
+    padding: 0 2;
+    margin-bottom: 1;
+}
+
+.workspace-defect-card {
+    height: auto;
+    min-height: 7;
+    border: round $primary;
+    background: $surface;
+    padding: 1 2;
+    margin-bottom: 1;
+}
+
+.workspace-defect-info {
+    width: 1fr;
+    height: auto;
+}
+
+.workspace-defect-actions {
+    width: 31;
+    min-width: 31;
+    align: right middle;
+    margin-left: 2;
+}
+
+.workspace-defect-actions Button {
+    width: 15;
+    margin-left: 1;
+}
+
+.workspace-defect-card.high {
+    border: round $warning;
+}
+
+.workspace-defect-card .workspace-defect-title {
+    height: auto;
+    text-style: bold;
+    color: $text;
+    margin-bottom: 1;
+}
+
+.workspace-defect-card .workspace-defect-meta {
+    height: auto;
+    color: $text-muted;
+}
+
+.workspace-defect-transition {
+    height: auto;
+    border: round $primary;
+    padding: 1 2;
+    color: $text-muted;
+}
+
+DefectStatusFilterScreen {
+    align: center middle;
+    background: $background 70%;
+}
+
+#defect-status-filter-dialog {
+    width: 72;
+    max-width: 90%;
+    height: 70%;
+    min-height: 16;
+    border: round $accent;
+    background: $surface;
+    padding: 1 2;
+}
+
+#defect-status-filter-dialog .modal-title {
+    height: auto;
+    text-style: bold;
+    color: $accent;
+}
+
+#defect-status-filter-dialog .modal-description {
+    height: auto;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#defect-status-filter-list {
+    height: 1fr;
+}
+
+#defect-status-filter-dialog .modal-actions {
+    height: 3;
+    align: right middle;
+}
+
+#defect-status-filter-dialog .modal-actions Button {
+    width: 16;
+    margin-left: 1;
+}
+
 #workspace-task-list { height: 1fr; }
 #workspace-task-list .workspace-task-card {
     height: auto;
@@ -380,6 +567,7 @@ WorkspaceDeleteConfirmation > VerticalScroll {
 }
 #workspace-task-status, #workspace-detail-notice { height: auto; }
 #workspace-detail-footer {
+    width: 100%;
     height: 3;
     padding: 0 2;
     align-horizontal: right;

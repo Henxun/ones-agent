@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from rich.console import Console
 from textual.containers import VerticalScroll
+from textual.geometry import Size
 from textual.widgets import (
     Button,
     Input,
@@ -186,6 +187,25 @@ def app_factory() -> DeveloperWorkflowTuiApp:
         provider_type="github",
         sandbox_configured=True,
     )
+
+
+@pytest.mark.asyncio
+async def test_screen_transition_keeps_latest_resize_when_console_size_is_stale() -> None:
+    app = app_factory()
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.resize_terminal(190, 42)
+        assert app.size == Size(190, 42)
+
+        # Model the Windows Terminal race: Textual delivered the maximize event,
+        # but the console size queried during ScreenResume is still the old value.
+        assert app._driver is not None
+        app._driver._size = Size(100, 32)
+        app.push_screen(HelpScreen())
+        await pilot.pause()
+
+        assert app.size == Size(190, 42)
+        assert app.screen.region.size == Size(190, 42)
 
 
 @pytest.mark.asyncio

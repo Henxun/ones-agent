@@ -409,12 +409,14 @@ async def test_dashboard_creates_multi_repository_workspace_and_opens_detail() -
     from textual.app import App
 
     from src.developer_workflow.tui.models import (
+        DefectChoice,
         DefectFilterOptions,
         FilterChoice,
         WorkspaceSummary,
     )
     from src.developer_workflow.tui.screens import (
         DashboardScreen,
+        DefectStatusFilterScreen,
         DefectWizardScreen,
         SettingsView,
         WorkspaceDetailScreen,
@@ -465,6 +467,22 @@ async def test_dashboard_creates_multi_repository_workspace_and_opens_detail() -
                 ),
             )
 
+        def query_defects(self, project, iteration, assignee, status_ids):
+            assert (project, iteration, assignee, status_ids) == (
+                "project-1", "iteration-1", "user-1", ("open",)
+            )
+            return SimpleNamespace(
+                session_id="candidate-session",
+                items=(
+                    DefectChoice(
+                        candidate_id="DEFECT-1",
+                        title="预览画面颜色异常",
+                        status_id="open",
+                        priority="高",
+                    ),
+                ),
+            )
+
     class Supervisor:
         async def run_readonly(self, _name, call, *args):
             return call(*args)
@@ -483,7 +501,7 @@ async def test_dashboard_creates_multi_repository_workspace_and_opens_detail() -
             await self.push_screen(screen)
             await screen.refresh_workspaces()
 
-    async with WorkspaceApp().run_test(size=(120, 36)) as pilot:
+    async with WorkspaceApp().run_test(size=(100, 32)) as pilot:
         assert screen.query_one("#workspace-home").display
         assert not screen.query_one("#workspace").display
         assert not screen.query("#nav-defects")
@@ -491,6 +509,8 @@ async def test_dashboard_creates_multi_repository_workspace_and_opens_detail() -
         assert "创建工作区" in str(
             screen.query_one("#workspace-empty").render()
         )
+        await pilot.resize_terminal(190, 42)
+        assert pilot.app.screen.region.width == 190
         await pilot.click("#create-workspace")
         for _ in range(20):
             await pilot.pause()
@@ -520,6 +540,16 @@ async def test_dashboard_creates_multi_repository_workspace_and_opens_detail() -
                 break
 
         assert isinstance(pilot.app.screen, WorkspaceDetailScreen)
+        assert sum(
+            isinstance(item, WorkspaceDetailScreen)
+            for item in pilot.app.screen_stack
+        ) == 1
+        screen._open_workspace_detail(created)
+        await pilot.pause()
+        assert sum(
+            isinstance(item, WorkspaceDetailScreen)
+            for item in pilot.app.screen_stack
+        ) == 1
         assert not screen.query_one("#workspace-empty").display
         assert pilot.app.screen.workspace == created
         assert len(controller.create_calls) == 1
@@ -533,15 +563,102 @@ async def test_dashboard_creates_multi_repository_workspace_and_opens_detail() -
         assert repositories[1].local is False
         assert repositories[1].key == "dependency"
         assert repositories[1].name == "dependency"
-        pilot.app.screen.query_one("#workspace-query-defects").press()
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if (
+                not pilot.app.screen.query_one("#workspace-query-defects").disabled
+                and pilot.app.screen._filter_interactions_armed
+            ):
+                break
+        assert not pilot.app.screen.query_one("#workspace-query-defects").disabled
+        assert pilot.app.screen._filter_interactions_armed
+        filter_card = pilot.app.screen.query_one(".workspace-defect-filter-card")
+        toolbar = filter_card.query_one(".workspace-defect-filter-toolbar")
+        module_body = filter_card.parent
+        assert module_body is not None
+        assert module_body.region.width >= pilot.app.screen.region.width - 6
+        assert toolbar.region.width == filter_card.content_region.width
+        assignee = toolbar.query_one("#workspace-defect-assignee")
+        status_filter = toolbar.query_one("#workspace-defect-status-filter-button")
+        reload_button = toolbar.query_one("#workspace-reload-defect-options")
+        query_button = filter_card.query_one("#workspace-query-defects")
+        assert assignee.region.right < status_filter.region.x
+        assert status_filter.region.right < reload_button.region.x
+        assert reload_button.region.right < query_button.region.x
+        assert query_button.region.right < filter_card.region.right
+        assert query_button.region.height == 3
+        assert query_button.styles.margin.bottom == 0
+        status_button = filter_card.query_one("#workspace-defect-status-filter-button")
+        assert "1 项" in str(status_button.label)
+        status_button.press()
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if isinstance(pilot.app.screen, DefectStatusFilterScreen) and tuple(
+                pilot.app.screen.query_one("#defect-status-filter-list").selected
+            ):
+                break
+        assert isinstance(pilot.app.screen, DefectStatusFilterScreen)
+        assert tuple(
+            pilot.app.screen.query_one("#defect-status-filter-list").selected
+        ) == ("open",)
+        pilot.app.screen.query_one("#defect-status-filter-apply").press()
         await pilot.pause()
+        assert isinstance(pilot.app.screen, WorkspaceDetailScreen)
+        assert pilot.app.screen.region.width == 190
+        pilot.app.screen.query_one("#workspace-query-defects").press()
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if pilot.app.screen.query(".workspace-defect-card"):
+                break
+        assert isinstance(pilot.app.screen, WorkspaceDetailScreen)
+        assert "共找到 1 个缺陷" in str(
+            pilot.app.screen.query_one("#workspace-defect-status").render()
+        )
+        cards = list(pilot.app.screen.query(".workspace-defect-card"))
+        assert len(cards) == 1
+        assert cards[0].has_class("high")
+        assert not pilot.app.screen.query(".workspace-defect-scope")
+        assert "预览画面颜色异常" in str(
+            cards[0].query_one(".workspace-defect-title").render()
+        )
+        assert "状态：Open" in str(
+            cards[0].query_one(".workspace-defect-meta").render()
+        )
+        info = cards[0].query_one(".workspace-defect-info")
+        actions = cards[0].query_one(".workspace-defect-actions")
+        assert actions.region.x > info.region.x
+        action_buttons = list(actions.query("Button"))
+        assert len(action_buttons) == 2
+        assert action_buttons[0].region.y == action_buttons[1].region.y
+        assert pilot.app.screen.query_one("#workspace-repair-defect-0")
+        pilot.app.screen.query_one("#workspace-repair-defect-0").press()
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if isinstance(pilot.app.screen, DefectWizardScreen):
+                break
         assert isinstance(pilot.app.screen, DefectWizardScreen)
         assert pilot.app.screen._workspace == created
-        assert pilot.app.screen.query_one("#project").value == "project-1"
-        assert pilot.app.screen.query_one("#project").disabled
-        for _ in range(10):
-            await pilot.pause()
-            if pilot.app.screen.query_one("#iteration").value == "iteration-1":
+        pilot.app.screen.action_cancel()
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, WorkspaceDetailScreen)
+        pilot.app.screen.query_one("#workspace-detail-back").press()
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if pilot.app.screen is screen:
                 break
-        assert pilot.app.screen.query_one("#iteration").value == "iteration-1"
-        assert pilot.app.screen.query_one("#iteration").disabled
+        assert pilot.app.screen is screen
+        assert screen.region.width == 190
+        assert screen.query_one("#workspace-home").display
+        assert len(screen.query(".workspace-home-card")) == 1
+        assert created.label in str(
+            screen.query_one(".workspace-home-title").render()
+        )
+        assert created.label in pilot.app.export_screenshot()
+        await pilot.click(screen.query_one(".workspace-home-card"))
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if isinstance(pilot.app.screen, WorkspaceDetailScreen):
+                break
+        await pilot.pause(0.3)
+        assert isinstance(pilot.app.screen, WorkspaceDetailScreen)
+        assert not isinstance(pilot.app.screen, DefectStatusFilterScreen)

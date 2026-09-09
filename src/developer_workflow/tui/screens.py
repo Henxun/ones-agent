@@ -970,17 +970,37 @@ class DefectWizardScreen(_MappingWizardScreen):
         supervisor: RunTaskSupervisor,
         *,
         workspace: WorkspaceSummary | None = None,
+        candidate_session_id: str | None = None,
+        candidates: tuple[DefectChoice, ...] = (),
+        selected_candidate: int | None = None,
+        analyze_only: bool = False,
     ) -> None:
         super().__init__(
             controller,
             supervisor,
             screen_id="defect-wizard-screen",
         )
-        self._candidate_session_id: str | None = None
-        self._candidates: tuple[DefectChoice, ...] = ()
+        self._candidate_session_id = candidate_session_id
+        self._candidates = candidates
+        self._selected_candidate = selected_candidate
+        self._initial_analyze_only = analyze_only
         self._workspace = workspace
 
     def _initial_widgets(self) -> tuple[Widget, ...]:
+        if self._candidate_session_id is not None and self._selected_candidate is not None:
+            candidate = (
+                self._candidates[self._selected_candidate]
+                if 0 <= self._selected_candidate < len(self._candidates)
+                else None
+            )
+            return (
+                Label("正在准备缺陷工作流"),
+                Static(
+                    candidate.title if candidate is not None else "正在校验查询结果…",
+                    markup=False,
+                    classes="workspace-defect-transition",
+                ),
+            )
         project = (
             self._workspace.project_id
             if self._workspace is not None
@@ -1005,6 +1025,14 @@ class DefectWizardScreen(_MappingWizardScreen):
         )
 
     async def on_mount(self) -> None:
+        if self._candidate_session_id is not None and self._selected_candidate is not None:
+            self._step = self.STEP_CANDIDATE
+            self._show_notice("正在准备缺陷工作流…")
+            await self._select_candidate(
+                self._selected_candidate,
+                analyze_only=self._initial_analyze_only,
+            )
+            return
         await self._load_filter_options()
 
     async def _load_filter_options(self) -> None:
@@ -2132,10 +2160,57 @@ class WorkspaceRenameScreen(ModalScreen[WorkspaceSummary | None]):
             self.dismiss(None)
 
 
+class DefectStatusFilterScreen(ModalScreen[tuple[str, ...] | None]):
+    """Compact modal for the workspace defect status multi-select."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", priority=True)]
+
+    def __init__(
+        self,
+        choices: tuple[FilterChoice, ...],
+        selected: tuple[str, ...],
+    ) -> None:
+        super().__init__(id="defect-status-filter-screen")
+        self._choices = choices
+        self._selected = frozenset(selected)
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="defect-status-filter-dialog"):
+            yield Static("筛选缺陷状态", classes="modal-title")
+            yield Static(
+                "可选择多个状态；不选择表示查询全部状态。",
+                classes="modal-description",
+            )
+            yield SelectionList(id="defect-status-filter-list")
+            with Horizontal(classes="modal-actions"):
+                yield Button("取消", id="defect-status-filter-cancel")
+                yield Button(
+                    "应用筛选", id="defect-status-filter-apply", variant="primary"
+                )
+
+    def on_mount(self) -> None:
+        listing = self.query_one("#defect-status-filter-list", SelectionList)
+        listing.add_options(
+            (item.name, item.id, item.id in self._selected) for item in self._choices
+        )
+
+    @on(Button.Pressed, "#defect-status-filter-apply")
+    def _apply(self) -> None:
+        self.dismiss(tuple(self.query_one(SelectionList).selected))
+
+    @on(Button.Pressed, "#defect-status-filter-cancel")
+    def _cancel(self) -> None:
+        self.action_cancel()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class WorkspaceDetailScreen(Screen[bool]):
     """Workspace-scoped entry point for defect queries."""
 
     BINDINGS = [Binding("escape", "back", "Back", priority=True)]
+    ENTRY_INPUT_GUARD_SECONDS = 0.2
 
     def __init__(
         self,
@@ -2147,6 +2222,13 @@ class WorkspaceDetailScreen(Screen[bool]):
         self._controller = controller
         self._supervisor = supervisor
         self.workspace = workspace
+        self._defect_session_id: str | None = None
+        self._defect_candidates: tuple[DefectChoice, ...] = ()
+        self._defect_status_names: dict[str, str] = {}
+        self._defect_status_choices: tuple[FilterChoice, ...] = ()
+        self._defect_status_ids: tuple[str, ...] = ()
+        self._defect_options_loaded = False
+        self._filter_interactions_armed = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="workspace-detail-body"):
@@ -2158,12 +2240,50 @@ class WorkspaceDetailScreen(Screen[bool]):
             with TabbedContent(id="workspace-modules"):
                 with TabPane("查询缺陷", id="workspace-defects-tab"):
                     with VerticalScroll(classes="workspace-module-body"):
-                        yield Static("缺陷分析与修复", classes="workspace-module-title")
-                        yield Static("查询当前项目和迭代的缺陷，按负责人、状态筛选，再选择仅分析或分析并修复。",
-                                     classes="workspace-module-description")
-                        yield Button("查询缺陷", id="workspace-query-defects", variant="primary")
-                        with Collapsible(title="关联仓库", collapsed=True):
-                            yield Static("\n".join(self.workspace.repositories), markup=False)
+                        yield Static("缺陷查询与处理", classes="workspace-module-title")
+                        yield Static(
+                            "筛选、浏览和发起处理都在当前页面完成。项目与迭代沿用工作区范围。",
+                            classes="workspace-module-description",
+                        )
+                        with Vertical(classes="workspace-defect-filter-card"):
+                            with Horizontal(classes="workspace-defect-filter-toolbar"):
+                                yield Static(
+                                    "负责人", classes="workspace-defect-filter-label"
+                                )
+                                yield Select(
+                                    [],
+                                    prompt="正在加载 ONES 成员…",
+                                    id="workspace-defect-assignee",
+                                    disabled=True,
+                                )
+                                yield Button(
+                                        "状态 · 加载中",
+                                        id="workspace-defect-status-filter-button",
+                                        disabled=True,
+                                    )
+                                yield Button(
+                                        "刷新", id="workspace-reload-defect-options"
+                                    )
+                                yield Button(
+                                        "查询缺陷",
+                                        id="workspace-query-defects",
+                                        variant="primary",
+                                        disabled=True,
+                                    )
+                        with Horizontal(classes="workspace-defect-results-header"):
+                            yield Static(
+                                "缺陷列表", classes="workspace-defect-results-heading"
+                            )
+                            yield Static(
+                                "正在加载筛选项…",
+                                id="workspace-defect-status",
+                                markup=False,
+                            )
+                        with Vertical(id="workspace-defect-results"):
+                            yield Static(
+                                "完成筛选并查询后，缺陷会显示在这里。",
+                                classes="workspace-defect-empty",
+                            )
                 with TabPane("查询需求", id="workspace-requirements-tab"):
                     with VerticalScroll(classes="workspace-module-body"):
                         yield Static("需求查询与实现", classes="workspace-module-title")
@@ -2176,6 +2296,20 @@ class WorkspaceDetailScreen(Screen[bool]):
                     yield Button("刷新任务", id="workspace-refresh-tasks")
                     yield Static("尚未加载", id="workspace-task-status", markup=False)
                     yield ListView(id="workspace-task-list")
+                with TabPane("关联仓库", id="workspace-repositories-tab"):
+                    with VerticalScroll(classes="workspace-module-body"):
+                        yield Static("工作区仓库", classes="workspace-module-title")
+                        yield Static(
+                            "以下仓库共同构成本工作区的代码范围，供缺陷和需求流程复用。",
+                            classes="workspace-module-description",
+                        )
+                        with Vertical(id="workspace-repositories"):
+                            for repository in self.workspace.repositories:
+                                yield Static(
+                                    f"• {repository}",
+                                    markup=False,
+                                    classes="workspace-repository-item",
+                                )
                 with TabPane("定时任务", id="workspace-schedules-tab"):
                     yield SchedulePane(self._controller, self._supervisor, self.workspace)
         yield Static("", id="workspace-detail-notice", markup=False)
@@ -2183,6 +2317,148 @@ class WorkspaceDetailScreen(Screen[bool]):
             yield Button("返回工作区", id="workspace-detail-back")
             yield Button("重命名", id="workspace-rename")
             yield Button("删除工作区", id="workspace-delete", variant="error")
+
+    async def on_mount(self) -> None:
+        self.set_focus(None)
+        self.set_timer(
+            self.ENTRY_INPUT_GUARD_SECONDS,
+            self._arm_filter_interactions,
+        )
+        await self._load_defect_options()
+
+    def _arm_filter_interactions(self) -> None:
+        self._filter_interactions_armed = True
+
+    async def _load_defect_options(self) -> None:
+        status = self.query_one("#workspace-defect-status", Static)
+        reload_button = self.query_one("#workspace-reload-defect-options", Button)
+        query_button = self.query_one("#workspace-query-defects", Button)
+        status_button = self.query_one(
+            "#workspace-defect-status-filter-button", Button
+        )
+        source = getattr(self._controller, "load_defect_filter_options", None)
+        if not callable(source):
+            status.update("当前控制器不支持缺陷查询")
+            return
+        reload_button.disabled = True
+        query_button.disabled = True
+        status_button.disabled = True
+        status.update("正在加载负责人和状态…")
+        try:
+            options = await self._supervisor.run_readonly(
+                "workspace-defect-options",
+                source,
+                self.workspace.project_id,
+            )
+            assignee = self.query_one("#workspace-defect-assignee", Select)
+            assignee.set_options((item.name, item.id) for item in options.assignees)
+            self._defect_status_choices = options.statuses
+            self._defect_status_names = {
+                item.id: item.name for item in options.statuses
+            }
+            selected_statuses = tuple(
+                item.id for item in options.statuses if item.selected
+            )
+            self._defect_status_ids = selected_statuses or tuple(
+                item.id for item in options.statuses[:1]
+            )
+            if options.assignees:
+                assignee.value = next(
+                    (item.id for item in options.assignees if item.selected),
+                    options.assignees[0].id,
+                )
+            assignee.disabled = not options.assignees
+            status_button.disabled = not options.statuses
+            self._update_defect_status_button()
+            query_button.disabled = not options.assignees
+            self._defect_options_loaded = True
+            status.update(
+                "部分筛选项暂不可用：" + "、".join(options.unavailable)
+                if options.unavailable
+                else "筛选项已就绪，点击查询查看缺陷列表"
+            )
+        except Exception:
+            status.update("筛选项加载失败，请检查 ONES 连接后重试")
+        finally:
+            reload_button.disabled = False
+
+    def _update_defect_status_button(self) -> None:
+        button = self.query_one("#workspace-defect-status-filter-button", Button)
+        count = len(self._defect_status_ids)
+        button.label = f"状态 · {count} 项" if count else "状态 · 全部"
+
+    @on(Button.Pressed, "#workspace-defect-status-filter-button")
+    def _open_defect_status_filter(self) -> None:
+        if not self._filter_interactions_armed:
+            return
+        self.app.push_screen(
+            DefectStatusFilterScreen(
+                self._defect_status_choices,
+                self._defect_status_ids,
+            ),
+            callback=self._defect_status_filter_applied,
+        )
+
+    def _defect_status_filter_applied(
+        self, selected: tuple[str, ...] | None
+    ) -> None:
+        if selected is None:
+            return
+        self._defect_status_ids = selected
+        self._update_defect_status_button()
+
+    @on(Button.Pressed, "#workspace-reload-defect-options")
+    async def _reload_defect_options(self) -> None:
+        if not self._filter_interactions_armed:
+            return
+        await self._load_defect_options()
+
+    async def _render_defect_candidates(self) -> None:
+        results = self.query_one("#workspace-defect-results", Vertical)
+        await results.remove_children()
+        if not self._defect_candidates:
+            await results.mount(
+                Static("当前筛选条件下暂无缺陷。", classes="workspace-defect-empty")
+            )
+            return
+        for index, candidate in enumerate(self._defect_candidates):
+            tone = (
+                "high"
+                if candidate.priority in {"高", "最高", "紧急", "High", "Urgent"}
+                else "normal"
+            )
+            await results.mount(
+                Horizontal(
+                    Vertical(
+                        Static(
+                            candidate.title,
+                            markup=False,
+                            classes="workspace-defect-title",
+                        ),
+                        Static(
+                            f"优先级：{candidate.priority or '未设置'}  ·  状态："
+                            f"{self._defect_status_names.get(candidate.status_id, candidate.status_id) or '未知'}",
+                            markup=False,
+                            classes="workspace-defect-meta",
+                        ),
+                        Static(
+                            f"缺陷 ID：{candidate.candidate_id}",
+                            markup=False,
+                            classes="workspace-defect-meta",
+                        ),
+                        classes="workspace-defect-info",
+                    ),
+                    Horizontal(
+                        Button("仅分析", id=f"workspace-analyze-defect-{index}"),
+                        Button(
+                            "分析并修复", id=f"workspace-repair-defect-{index}",
+                            variant="primary",
+                        ),
+                        classes="workspace-defect-actions",
+                    ),
+                    classes=f"workspace-defect-card {tone}",
+                )
+            )
 
     @on(Button.Pressed, "#workspace-rename")
     def _rename_workspace(self) -> None:
@@ -2259,15 +2535,88 @@ class WorkspaceDetailScreen(Screen[bool]):
                 self.query_one("#workspace-task-status", Static).update("任务详情暂不可用，请刷新后重试")
 
     @on(Button.Pressed, "#workspace-query-defects")
-    def _query_defects(self) -> None:
-        self.app.push_screen(
-            DefectWizardScreen(
-                self._controller,
-                self._supervisor,
-                workspace=self.workspace,
-            ),
-            callback=self._workflow_started,
+    async def _query_defects(self) -> None:
+        if not self._filter_interactions_armed:
+            return
+        status = self.query_one("#workspace-defect-status", Static)
+        button = self.query_one("#workspace-query-defects", Button)
+        assignee = self.query_one("#workspace-defect-assignee", Select).value
+        status_ids = self._defect_status_ids
+        if not self._defect_options_loaded or type(assignee) is not str or not assignee:
+            status.update("请先选择负责人并等待筛选项加载完成")
+            return
+        if any(not _SAFE_MAPPING_KEY.fullmatch(item) for item in status_ids):
+            status.update("缺陷状态包含无效值，请刷新筛选项")
+            return
+        button.disabled = True
+        status.update("正在查询缺陷…")
+        try:
+            session = await self._supervisor.run_readonly(
+                "workspace-query-defects",
+                self._controller.query_defects,
+                self.workspace.project_id,
+                self.workspace.iteration_id,
+                assignee,
+                status_ids,
+            )
+            self._defect_session_id = session.session_id
+            self._defect_candidates = session.items
+            await self._render_defect_candidates()
+            status.update(
+                f"共找到 {len(session.items)} 个缺陷 · 可直接选择处理方式"
+                if session.items
+                else "当前筛选条件下没有缺陷"
+            )
+        except Exception:
+            self._defect_session_id = None
+            self._defect_candidates = ()
+            await self._render_defect_candidates()
+            status.update("缺陷查询失败，请检查 ONES 连接后重试")
+        finally:
+            button.disabled = False
+
+    @on(Button.Pressed)
+    def _start_workspace_defect(self, event: Button.Pressed) -> None:
+        button_id = event.button.id or ""
+        prefixes = (
+            ("workspace-analyze-defect-", True),
+            ("workspace-repair-defect-", False),
         )
+        for prefix, analyze_only in prefixes:
+            if not button_id.startswith(prefix):
+                continue
+            try:
+                index = int(button_id.removeprefix(prefix))
+            except ValueError:
+                return
+            if (
+                self._defect_session_id is None
+                or not 0 <= index < len(self._defect_candidates)
+            ):
+                self.query_one("#workspace-defect-status", Static).update(
+                    "查询结果已失效，请重新查询"
+                )
+                return
+            session_id = self._defect_session_id
+            self._defect_session_id = None
+            for action in self.query(".workspace-defect-actions Button"):
+                action.disabled = True
+            self.query_one("#workspace-defect-status", Static).update(
+                "已选择缺陷，正在进入处理流程…"
+            )
+            self.app.push_screen(
+                DefectWizardScreen(
+                    self._controller,
+                    self._supervisor,
+                    workspace=self.workspace,
+                    candidate_session_id=session_id,
+                    candidates=self._defect_candidates,
+                    selected_candidate=index,
+                    analyze_only=analyze_only,
+                ),
+                callback=self._workflow_started,
+            )
+            return
 
     def _workflow_started(self, detail: RunDetail | None) -> None:
         if detail is not None:
@@ -2378,6 +2727,8 @@ class DashboardScreen(Screen[None]):
         self._workflow_watchers: set[asyncio.Task[None]] = set()
         self._workflow_running_run_ids: set[str] = set()
         self._pending_delete_run_id: str | None = None
+        self._applying_workspace_refresh = False
+        self._workspace_detail_active = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="dashboard", classes="three"):
@@ -2532,7 +2883,11 @@ class DashboardScreen(Screen[None]):
             )
             return
         self._workspaces = workspaces
-        await self.query_one(WorkspaceListPane).replace_workspaces(workspaces)
+        self._applying_workspace_refresh = True
+        try:
+            await self.query_one(WorkspaceListPane).replace_workspaces(workspaces)
+        finally:
+            self._applying_workspace_refresh = False
         self.query_one("#notice", Static).update("")
 
     def on_unmount(self) -> None:
@@ -3312,28 +3667,36 @@ class DashboardScreen(Screen[None]):
         if workspace is None:
             return
         await self.refresh_workspaces()
-        self.app.push_screen(
-            WorkspaceDetailScreen(self._controller, self._supervisor, workspace),
-            callback=self._workspace_detail_closed,
-        )
+        self._open_workspace_detail(workspace)
 
     async def _workspace_detail_closed(self, deleted: bool | None) -> None:
+        self._workspace_detail_active = False
         if deleted is not None:
             await self.refresh_workspaces()
 
+    def _open_workspace_detail(self, workspace: WorkspaceSummary) -> None:
+        """Open exactly one workspace detail screen at a time."""
+
+        if self._workspace_detail_active:
+            return
+        self._workspace_detail_active = True
+        try:
+            self.app.push_screen(
+                WorkspaceDetailScreen(self._controller, self._supervisor, workspace),
+                callback=self._workspace_detail_closed,
+            )
+        except BaseException:
+            self._workspace_detail_active = False
+            raise
+
     @on(ListView.Selected, "#workspace-list")
     def select_workspace(self, event: ListView.Selected) -> None:
+        if self._applying_workspace_refresh:
+            return
         index = event.list_view.index
         if index is None or not 0 <= index < len(self._workspaces):
             return
-        self.app.push_screen(
-            WorkspaceDetailScreen(
-                self._controller,
-                self._supervisor,
-                self._workspaces[index],
-            ),
-            callback=self._workspace_detail_closed,
-        )
+        self._open_workspace_detail(self._workspaces[index])
 
     @on(Button.Pressed, "#nav-runs")
     def show_runs(self) -> None:
@@ -3392,6 +3755,7 @@ __all__ = [
     "ApprovalModal",
     "CancelModal",
     "DashboardScreen",
+    "DefectStatusFilterScreen",
     "DefectWizardScreen",
     "HelpScreen",
     "NavigationPane",
