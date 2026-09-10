@@ -90,6 +90,20 @@ class RequirementSourceError(RequirementFlowError):
     """A requirement or Wiki source cannot be safely verified."""
 
 
+def _is_requirement_component_type(value: object) -> bool:
+    if type(value) is not str:
+        return False
+    normalized = value.strip().casefold().replace("-", "_").replace(" ", "_")
+    return normalized in {
+        "requirement",
+        "requirements",
+        "story",
+        "user_story",
+        "sub_requirement",
+        "subrequirement",
+    }
+
+
 class _SandboxBudgetExhausted(TimeoutError):
     """The executor's own absolute sandbox budget has been exhausted."""
 
@@ -132,6 +146,8 @@ def _raise_sanitized_sandbox_failure(error: BaseException) -> None:
 
 class RequirementGateway(Protocol):
     def get_normalized_requirement_sync(self, issue_id: str) -> RequirementRecord: ...
+
+    def list_project_issue_types_sync(self, project_id: str) -> list[object]: ...
 
     def get_wiki_snapshot_sync(self, url: str) -> WikiPageSnapshot: ...
 
@@ -1674,6 +1690,44 @@ class RequirementFlow:
             raise _FlowBlocked(
                 _Blocked("ONES requirement is incomplete", WorkflowState.READING_ONES)
             )
+        try:
+            issue_types = self.gateway.list_project_issue_types_sync(requirement.project.id)
+            authorized_type_ids = {
+                str(getattr(item, "id", ""))
+                for item in issue_types
+                if _is_requirement_component_type(
+                    getattr(item, "component_type", None)
+                )
+            }
+        except Exception as error:
+            raise _FlowBlocked(
+                _Blocked(
+                    "ONES requirement type could not be verified",
+                    WorkflowState.READING_ONES,
+                )
+            ) from error
+        if requirement.issue_type.id not in authorized_type_ids:
+            raise _FlowBlocked(
+                _Blocked(
+                    "ONES work item is not a requirement",
+                    WorkflowState.READING_ONES,
+                )
+            )
+        if run.authorized_issue_type_id:
+            if (
+                requirement.project.id != run.project_id
+                or (
+                    run.iteration_id
+                    and requirement.iteration.id != run.iteration_id
+                )
+                or requirement.issue_type.id != run.authorized_issue_type_id
+            ):
+                raise _FlowBlocked(
+                    _Blocked(
+                        "ONES requirement no longer matches the authorized query",
+                        WorkflowState.READING_ONES,
+                    )
+                )
         snapshots: list[WikiPageSnapshot] = []
         seen_urls: set[str] = set()
         seen_pages: set[str] = set()
@@ -1713,8 +1767,16 @@ class RequirementFlow:
         )
         updated = run.validated_update(
             requirement=deepcopy(requirement),
-            project_id=requirement.project.id,
-            iteration_id=requirement.iteration.id,
+            project_id=(
+                run.project_id
+                if run.authorized_issue_type_id
+                else requirement.project.id
+            ),
+            iteration_id=(
+                run.iteration_id
+                if run.authorized_issue_type_id
+                else requirement.iteration.id
+            ),
             wiki_snapshots=tuple(deepcopy(snapshots)),
             repository_candidates=candidates,
             repository_group_candidates=group_candidates,
@@ -1743,12 +1805,14 @@ class RequirementFlow:
             )
         mapping = run.repository
         group = run.repository_group
+        resolved_project_id = requirement.project.id
+        resolved_iteration_id = requirement.iteration.id
         if mapping is None and group is None:
             return run
         if group is not None:
             try:
                 authorized_group = self.config.resolve_group_key(
-                    group.key, run.project_id, run.iteration_id
+                    group.key, resolved_project_id, resolved_iteration_id
                 )
             except Exception as error:
                 raise _FlowBlocked(
@@ -1765,7 +1829,9 @@ class RequirementFlow:
                     )
                 )
         else:
-            candidates = self._candidate_mappings(run.project_id, run.iteration_id)
+            candidates = self._candidate_mappings(
+                resolved_project_id, resolved_iteration_id
+            )
             if not any(candidate == mapping for candidate in candidates):
                 raise _FlowBlocked(
                     _Blocked("confirmed repository mapping is not authorized", WorkflowState.VALIDATING)

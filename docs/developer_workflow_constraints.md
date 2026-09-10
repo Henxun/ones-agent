@@ -37,10 +37,12 @@
 - 多仓库分别绑定自身快照；仅对有改动仓库发布，不制造空提交。未修改仓库仍须保持证据一致。
 - 待验证任务只可标为待处理，不得伪造 `passed`、历史失败日志或实机验证。
 - PR 交付后进入 `WAITING_PR_VERIFICATION`，不误标 `COMPLETED`，不重复本地 Review。
+- Draft PR 后人工验证通过只追加与审批指纹、待验证清单以及实际 PR/提交集合绑定的 `merge_readiness=passed` 记录。撤销通过结论必须追加 `cleared` 审计记录并生成新版本，保留原证据；只有撤销后才能重录，禁止覆盖或删除历史。任务仍保持 `WAITING_PR_VERIFICATION`，继续等待平台合并；这些记录不得自动合并、发布、转 Ready 或把任务标记为 `COMPLETED`，也不等同于 release readiness。
 - Draft 和 pending 状态不替代托管平台的合并/发布保护；工具不得声称已经配置未核验的仓库保护。
 
 ## 环境和界面
 
+- ONES 对接不使用 `/openapi/` 接口。缺陷、需求、工作项类型、成员与状态等查询统一复用已在授权网页会话中验证的 GraphQL / 内部 REST 请求；新增或调整接口前必须以网页真实请求为依据并补充回归测试，不能为获得公开类型字段而改走 OpenAPI，也不能按中文名称猜测工作项类型。
 - 用户明确允许 TUI 使用本机 Git 配置：提交身份、全局/系统配置、credential helper、SSH 配置及 agent。
   TUI 生产入口开启 use_local_git_config；其它入口默认保持隔离模式。不得因此复制或记录密钥、令牌，
   不继承 GIT_CONFIG_COUNT 等环境注入，不自动执行仓库 hooks，不取消人工审批；MR/PR API 仍须平台令牌。

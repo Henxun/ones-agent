@@ -27,6 +27,7 @@ from .contracts import (
     WorkflowState,
     WorkflowType,
 )
+from .pr_handoff import merge_readiness_binding
 
 if os.name == "nt":
     import ctypes
@@ -496,6 +497,7 @@ class FileRunStore:
         self._check_version(persisted, expected_version)
         if run.run_id != persisted.run_id:
             raise InvalidRunMutationError("run_id must match the stored workflow run")
+        _validate_requirement_scope_progress(persisted, run)
         _validate_publication_progress(persisted, run)
         if not internal_transition:
             immutable_fields = (
@@ -1032,6 +1034,46 @@ def _release_advisory_lock(descriptor: int) -> None:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
 
 
+def _validate_requirement_scope_progress(
+    current: WorkflowRun, incoming: WorkflowRun
+) -> None:
+    """Keep work-item authorization immutable after its initial binding.
+
+    Older direct-ID requirement runs were created without project metadata, so
+    retain their one safe compatibility transition: the first ONES snapshot may
+    bind the empty project/iteration pair.  It must not add an authorized issue
+    type; capability-backed runs carry their complete scope from creation.
+    """
+
+    current_scope = (
+        current.project_id,
+        current.iteration_id,
+        current.authorized_issue_type_id,
+    )
+    incoming_scope = (
+        incoming.project_id,
+        incoming.iteration_id,
+        incoming.authorized_issue_type_id,
+    )
+    if current_scope == incoming_scope:
+        return
+    legacy_initial_binding = (
+        current.workflow_type is WorkflowType.REQUIREMENT
+        and not current.project_id
+        and not current.iteration_id
+        and not current.authorized_issue_type_id
+        and current.requirement is None
+        and incoming.requirement is not None
+        and not incoming.authorized_issue_type_id
+        and incoming.project_id == incoming.requirement.project.id
+        and incoming.iteration_id == incoming.requirement.iteration.id
+    )
+    if not legacy_initial_binding:
+        raise InvalidRunMutationError(
+            "workflow project, iteration, and authorized issue type are immutable"
+        )
+
+
 def _validate_persisted_run(run: WorkflowRun, *, loading: bool) -> None:
     """Validate state-machine invariants not expressible in the data model."""
 
@@ -1051,6 +1093,22 @@ def _validate_persisted_run_invariants(run: WorkflowRun) -> None:
         )
     if run.retry_count < 0:
         raise InvalidRunMutationError("retry_count must not be negative")
+    if run.authorized_issue_type_id:
+        if run.workflow_type is not WorkflowType.REQUIREMENT or not run.project_id:
+            raise InvalidRunMutationError(
+                "authorized requirement scope is incomplete"
+            )
+        if run.requirement is not None and (
+            run.requirement.project.id != run.project_id
+            or (
+                run.iteration_id
+                and run.requirement.iteration.id != run.iteration_id
+            )
+            or run.requirement.issue_type.id != run.authorized_issue_type_id
+        ):
+            raise InvalidRunMutationError(
+                "persisted requirement differs from its authorized scope"
+            )
     publication = run.publication
     group_publication = run.group_publication
     delivered = run.state in {WorkflowState.COMPLETED, WorkflowState.WAITING_PR_VERIFICATION}
@@ -1059,6 +1117,45 @@ def _validate_persisted_run_invariants(run: WorkflowRun) -> None:
             raise InvalidRunMutationError("PR verification wait requires deferred checks")
     if run.state is WorkflowState.COMPLETED and run.approval is not None and run.approval.draft_pr:
         raise InvalidRunMutationError("Draft handoff must not be marked completed")
+    readiness_records = run.merge_readiness_history or (
+        (run.merge_readiness,) if run.merge_readiness is not None else ()
+    )
+    if readiness_records:
+        if run.state is not WorkflowState.WAITING_PR_VERIFICATION:
+            raise InvalidRunMutationError(
+                "merge readiness requires PR verification wait"
+            )
+        try:
+            verification_digest, publication_digest = merge_readiness_binding(run)
+        except ValueError:
+            raise InvalidRunMutationError(
+                "merge readiness Draft evidence is incomplete"
+            ) from None
+        expected_status = "passed"
+        for record in readiness_records:
+            if record.status != expected_status:
+                raise InvalidRunMutationError(
+                    "merge readiness history is invalid"
+                )
+            if (
+                run.approval is None
+                or record.approval_fingerprint != run.approval.fingerprint
+                or record.verification_digest != verification_digest
+                or record.publication_digest != publication_digest
+            ):
+                raise InvalidRunMutationError(
+                    "merge readiness differs from approved Draft evidence"
+                )
+            expected_status = "cleared" if record.status == "passed" else "passed"
+        effective = (
+            readiness_records[-1]
+            if readiness_records[-1].status == "passed"
+            else None
+        )
+        if run.merge_readiness != effective:
+            raise InvalidRunMutationError(
+                "merge readiness history/current record differs"
+            )
     intents = group_publication.repositories if group_publication else (publication,)
     if run.approval is not None and any(item.approved_fingerprint and item.draft_pr != run.approval.draft_pr for item in intents):
         raise InvalidRunMutationError("Publication draft mode must match approval")
@@ -1145,6 +1242,22 @@ def _validate_publication_progress(current: WorkflowRun, incoming: WorkflowRun) 
             raise InvalidRunMutationError("publication facts are immutable")
     if old.comment_id and new.error:
         raise InvalidRunMutationError("completed comment fact cannot acquire an error")
+    old_readiness_history = current.merge_readiness_history or (
+        (current.merge_readiness,) if current.merge_readiness is not None else ()
+    )
+    new_readiness_history = incoming.merge_readiness_history
+    if (
+        len(new_readiness_history) < len(old_readiness_history)
+        or new_readiness_history[: len(old_readiness_history)]
+        != old_readiness_history
+        or len(new_readiness_history) > len(old_readiness_history) + 1
+    ):
+        raise InvalidRunMutationError("merge readiness history is immutable")
+    if (
+        len(new_readiness_history) == len(old_readiness_history)
+        and current.merge_readiness != incoming.merge_readiness
+    ):
+        raise InvalidRunMutationError("merge readiness record is immutable")
     _validate_group_publication_progress(current, incoming)
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from .coding_agents import CodingAgentCapabilities
 from .contracts import (
     CodingAgentResult,
     PreparedWorktree,
@@ -50,6 +51,16 @@ class CodingAgentOutputError(CodingAgentRunnerError):
 
 
 @runtime_checkable
+class CapabilityAwareCodingAgentRunner(Protocol):
+    """Optional provider metadata exposed without widening the stable runner API."""
+
+    provider_key: str
+
+    @property
+    def capabilities(self) -> CodingAgentCapabilities: ...
+
+
+@runtime_checkable
 class CodingAgentRunner(Protocol):
     """Stable workflow-facing runner contract, independent of a CLI vendor."""
 
@@ -89,6 +100,7 @@ class CodingAgentRunner(Protocol):
 
 
 __all__ = [
+    "CapabilityAwareCodingAgentRunner",
     "CodingAgentExecutionError",
     "CodingAgentOutputError",
     "CodingAgentProcessStartError",

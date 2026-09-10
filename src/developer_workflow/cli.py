@@ -145,6 +145,12 @@ def _parser(stdout: TextIO, stderr: TextIO) -> _SafeParser:
     approve.add_argument("run_id")
     approve.add_argument("--actor", required=True)
 
+    readiness = command("record-merge-readiness")
+    readiness.add_argument("run_id")
+    readiness.add_argument("--actor", required=True)
+    readiness.add_argument("--evidence", required=True)
+    readiness.add_argument("--version", type=int, required=True)
+
     cancel = command("cancel")
     cancel.add_argument("run_id")
     cancel.add_argument("--actor", required=True)
@@ -203,6 +209,10 @@ def _show_run(run: WorkflowRun, stdout: TextIO) -> None:
         _line(stdout, "risks", risk)
     if run.approval is not None and run.approval.fingerprint:
         _line(stdout, "fingerprint", run.approval.fingerprint)
+    if run.merge_readiness is not None:
+        _line(stdout, "merge_readiness", run.merge_readiness.status)
+        _line(stdout, "merge_readiness_actor", run.merge_readiness.actor)
+        _line(stdout, "merge_readiness_evidence", run.merge_readiness.evidence)
     if run.approval is not None and run.approval.repository_group is not None:
         _line(stdout, "repository group", run.approval.repository_group.key)
         for item in run.approval.repositories:
@@ -509,6 +519,13 @@ def _execute(
         run = orchestrator.revise(args.run_id, args.feedback, scope=args.scope)
     elif args.command == "approve":
         run = orchestrator.approve(args.run_id, args.actor)
+    elif args.command == "record-merge-readiness":
+        run = orchestrator.record_merge_readiness(
+            args.run_id,
+            args.actor,
+            args.evidence,
+            expected_version=args.version,
+        )
     elif args.command == "cancel":
         run = orchestrator.cancel(args.run_id, args.actor)
     else:  # guarded by argparse

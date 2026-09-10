@@ -40,6 +40,8 @@ from .models import (
     RunDetail,
     RunFilter,
     RunSummary,
+    ScheduleRunItemView,
+    ScheduleRunView,
     TuiDisplayError,
     WorkspaceRepositoryInput,
     WorkspaceSummary,
@@ -57,6 +59,7 @@ _LIST_ERROR = "workflow list is unavailable"
 _DISPLAY_ERROR = "workflow display is unavailable"
 _ACTION_UNAVAILABLE = "workflow action is unavailable"
 _QUERY_UNAVAILABLE = "candidate query is unavailable"
+_SCHEDULE_HISTORY_UNAVAILABLE = "定时任务运行历史不可用"
 _RUNTIME_CLOSE_TIMEOUT = 5.0
 
 
@@ -271,6 +274,7 @@ class _RequirementSession:
     candidate_ids: frozenset[str]
     project_id: str
     iteration_id: str
+    issue_type_id: str
     expires_at: float
 
 
@@ -353,6 +357,82 @@ class TuiController:
             return self._run_index.list(RunFilter(), workspace=workspace)
         except Exception:
             raise TuiControllerError("workspace tasks are unavailable") from None
+
+    def _workspace_is_current(self, workspace: WorkspaceSummary) -> bool:
+        if type(workspace) is not WorkspaceSummary:
+            return False
+        identity = (
+            workspace.key,
+            workspace.project_id,
+            workspace.iteration_id,
+            workspace.repositories,
+        )
+        return any(
+            (
+                current.key,
+                current.project_id,
+                current.iteration_id,
+                current.repositories,
+            )
+            == identity
+            for current in self.list_workspaces()
+        )
+
+    def list_schedule_runs(
+        self,
+        workspace: WorkspaceSummary,
+        *,
+        schedule_id: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[ScheduleRunView, ...]:
+        """Return one authorized, bounded page of scheduled executions."""
+
+        try:
+            if (
+                not self._workspace_is_current(workspace)
+                or self.schedule_store is None
+            ):
+                raise ValueError
+            runs = self.schedule_store.query_runs(
+                workspace.key,
+                schedule_id=schedule_id,
+                limit=limit,
+                offset=offset,
+            )
+            return tuple(ScheduleRunView.from_run(run) for run in runs)
+        except (KeyboardInterrupt, SystemExit, GeneratorExit, MemoryError):
+            raise
+        except Exception:
+            raise TuiControllerError(_SCHEDULE_HISTORY_UNAVAILABLE) from None
+
+    def list_schedule_run_items(
+        self,
+        workspace: WorkspaceSummary,
+        run_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[ScheduleRunItemView, ...]:
+        """Return authorized candidate outcomes for one scheduled execution."""
+
+        try:
+            if (
+                not self._workspace_is_current(workspace)
+                or self.schedule_store is None
+            ):
+                raise ValueError
+            items = self.schedule_store.query_run_items(
+                workspace.key,
+                run_id,
+                limit=limit,
+                offset=offset,
+            )
+            return tuple(ScheduleRunItemView.from_item(item) for item in items)
+        except (KeyboardInterrupt, SystemExit, GeneratorExit, MemoryError):
+            raise
+        except Exception:
+            raise TuiControllerError(_SCHEDULE_HISTORY_UNAVAILABLE) from None
 
     @property
     def default_defect_project(self) -> str:
@@ -863,9 +943,19 @@ class TuiController:
                 raise TuiControllerError(_QUERY_UNAVAILABLE)
         gateway = getattr(getattr(self._orchestrator, "requirement_flow", None), "gateway", None)
         list_requirements = getattr(gateway, "list_requirements", None)
-        if not callable(list_requirements):
+        list_issue_types = getattr(gateway, "list_project_issue_types", None)
+        if not callable(list_requirements) or not callable(list_issue_types):
             raise TuiControllerError(_QUERY_UNAVAILABLE)
         try:
+            metadata = self.load_requirement_filter_options(project, issue_type_id)
+            if (
+                issue_type_id not in {item.id for item in metadata.issue_types}
+                or (assignee and assignee not in {item.id for item in metadata.assignees})
+                or not set(status_ids).issubset(
+                    {item.id for item in metadata.statuses}
+                )
+            ):
+                raise ValueError
             records = self._async_runtime.submit(
                 list_requirements(
                     project_id=project or None,
@@ -880,6 +970,7 @@ class TuiController:
                 len({item.requirement_id for item in items}) != len(items)
                 or any(item.project_id != project for item in items)
                 or any(iteration and item.iteration_id != iteration for item in items)
+                or any(item.issue_type_id != issue_type_id for item in items)
             ):
                 raise ValueError
         except _AsyncRuntimeError:
@@ -895,6 +986,7 @@ class TuiController:
                     candidate_ids=frozenset(item.requirement_id for item in items),
                     project_id=project,
                     iteration_id=iteration,
+                    issue_type_id=issue_type_id,
                     expires_at=(
                         self._monotonic_clock() + self._candidate_session_ttl_seconds
                     ),
@@ -903,8 +995,12 @@ class TuiController:
                     self._requirement_sessions.popitem(last=False)
         return session_id, items
 
-    def load_requirement_filter_options(self, project: str) -> RequirementFilterOptions:
-        """Load project-scoped ONES work-item types for the requirement picker."""
+    def load_requirement_filter_options(
+        self,
+        project: str,
+        issue_type_id: str = "",
+    ) -> RequirementFilterOptions:
+        """Load project-scoped ONES types, members, and workflow statuses."""
 
         if type(project) is not str or not project.strip():
             raise TuiControllerError(_QUERY_UNAVAILABLE)
@@ -912,8 +1008,69 @@ class TuiController:
         source = getattr(gateway, "list_project_issue_types", None)
         if not callable(source):
             raise TuiControllerError(_QUERY_UNAVAILABLE)
+
+        async def load() -> tuple[object, object, object, str, tuple[str, ...]]:
+            unavailable: list[str] = []
+            records = await source(project)
+            requirement_ids = [
+                str(getattr(record, "id", ""))
+                for record in records
+                if self._is_requirement_issue_type(record)
+            ] if isinstance(records, list) else []
+            selected_type = issue_type_id or (requirement_ids[0] if requirement_ids else "")
+            if selected_type not in requirement_ids:
+                raise ValueError
+            try:
+                roles = await gateway.list_role_members(project)
+            except Exception:
+                roles = []
+                unavailable.append("project roles")
+            try:
+                current_user_id = await gateway.get_current_user_id()
+            except Exception:
+                current_user_id = ""
+                unavailable.append("current user")
+            member_ids = sorted(
+                {
+                    identity
+                    for role in roles
+                    if isinstance(role, dict) and isinstance(role.get("members"), list)
+                    for member in role["members"]
+                    for identity in (
+                        member
+                        if type(member) is str
+                        else member.get("uuid", member.get("id"))
+                        if isinstance(member, dict)
+                        else None,
+                    )
+                    if type(identity) is str and identity
+                }
+            )
+            if current_user_id and current_user_id not in member_ids:
+                member_ids.append(current_user_id)
+                member_ids.sort()
+            try:
+                members = await gateway.list_team_members(
+                    uuids=member_ids if member_ids else None
+                )
+                if not members and member_ids:
+                    members = await gateway.list_team_members(uuids=None)
+            except Exception:
+                members = []
+                unavailable.append("users")
+            if not members and current_user_id:
+                members = [{"uuid": current_user_id, "name": "Current user"}]
+            try:
+                statuses = await gateway.list_defect_statuses(project, selected_type)
+            except Exception:
+                statuses = []
+                unavailable.append("statuses")
+            return records, members, statuses, current_user_id, tuple(unavailable)
+
         try:
-            records = self._async_runtime.submit(source(project))
+            records, members, statuses, current_user_id, unavailable = (
+                self._async_runtime.submit(load())
+            )
             if not isinstance(records, list):
                 raise ValueError
             choices: dict[str, FilterChoice] = {}
@@ -922,19 +1079,77 @@ class TuiController:
                 name = getattr(record, "name", None)
                 if type(identity) is not str or type(name) is not str:
                     raise ValueError
+                if not self._is_requirement_issue_type(record):
+                    continue
                 choice = FilterChoice(
                     id=validate_tui_input_text(identity, maximum=128),
                     name=safe_tui_text(name, maximum=256),
-                    selected=name.strip().casefold() == "需求",
+                    selected=not choices,
                 )
                 choices[choice.id] = choice
-            return RequirementFilterOptions(issue_types=tuple(choices.values()))
+            if not choices:
+                raise ValueError
+
+            def raw_member_choices(values: object) -> tuple[FilterChoice, ...]:
+                if not isinstance(values, list):
+                    raise ValueError
+                result: dict[str, FilterChoice] = {}
+                for value in values:
+                    if not isinstance(value, dict):
+                        continue
+                    identity = value.get("uuid", value.get("id"))
+                    name = value.get("name") or value.get("email")
+                    if type(identity) is not str or not identity or type(name) is not str:
+                        continue
+                    result[identity] = FilterChoice(
+                        id=validate_tui_input_text(identity, maximum=128),
+                        name=safe_tui_text(name, maximum=256),
+                        selected=identity == current_user_id,
+                    )
+                return tuple(
+                    sorted(result.values(), key=lambda item: item.name.casefold())
+                )
+
+            if not isinstance(statuses, list):
+                raise ValueError
+            status_choices = tuple(
+                FilterChoice(
+                    id=validate_tui_input_text(status.id, maximum=128),
+                    name=safe_tui_text(status.name or status.id, maximum=256),
+                    selected=status.default is True,
+                )
+                for status in statuses
+            )
+            return RequirementFilterOptions(
+                issue_types=tuple(choices.values()),
+                assignees=raw_member_choices(members),
+                statuses=status_choices,
+                unavailable=unavailable,
+            )
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception:
             raise TuiControllerError(_QUERY_UNAVAILABLE) from None
 
+    @staticmethod
+    def _is_requirement_issue_type(record: object) -> bool:
+        """Authorize requirement entry points from ONES' stable component type."""
+
+        component_type = getattr(record, "component_type", None)
+        if type(component_type) is not str:
+            return False
+        normalized = component_type.strip().casefold().replace("-", "_").replace(" ", "_")
+        return normalized in {
+            "requirement",
+            "requirements",
+            "story",
+            "user_story",
+            "sub_requirement",
+            "subrequirement",
+        }
+
     def start_requirement(self, requirement_id: str, session_id: str | None = None) -> RunDetail:
+        expected_scope: tuple[str, str, str] | None = None
         if session_id is not None:
             with self._candidate_lock:
                 session = self._requirement_sessions.pop(session_id, None)
@@ -944,7 +1159,16 @@ class TuiController:
                     or requirement_id not in session.candidate_ids
                 ):
                     raise TuiControllerError(_CANDIDATE_ERROR)
-        return self._command(self._orchestrator.start_requirement, requirement_id)
+                expected_scope = (
+                    session.project_id,
+                    session.iteration_id,
+                    session.issue_type_id,
+                )
+        return self._command(
+            self._orchestrator.start_requirement,
+            requirement_id,
+            expected_scope=expected_scope,
+        )
 
     def discard_requirement_session(self, session_id: str) -> None:
         """Revoke a requirement query capability without starting a workflow."""
@@ -1021,6 +1245,51 @@ class TuiController:
         return self._command(self._orchestrator.verify, run_id, task_key, actor,
             expected_version=expected_version, manual_evidence=manual_evidence, passed=passed,
             expected_recipe_digest=expected_recipe_digest)
+
+    def record_merge_readiness(
+        self,
+        run_id: str,
+        actor: str,
+        evidence: str,
+        expected_version: int,
+    ) -> RunDetail:
+        """Expose post-Draft human verification without publication authority."""
+
+        return self._command(
+            self._orchestrator.record_merge_readiness,
+            run_id,
+            actor,
+            evidence,
+            expected_version=expected_version,
+        )
+
+    def get_merge_readiness(
+        self, run_id: str, expected_version: int
+    ) -> RunDetail:
+        """Read readiness only when it still matches this run version."""
+
+        return self._command(
+            self._orchestrator.get_merge_readiness,
+            run_id,
+            expected_version=expected_version,
+        )
+
+    def clear_merge_readiness(
+        self,
+        run_id: str,
+        actor: str,
+        reason: str,
+        expected_version: int,
+    ) -> RunDetail:
+        """Revoke readiness by appending audit evidence, never by deleting it."""
+
+        return self._command(
+            self._orchestrator.clear_merge_readiness,
+            run_id,
+            actor,
+            reason,
+            expected_version=expected_version,
+        )
 
     def resume(self, run_id: str, expected_version: int) -> RunDetail:
         try:

@@ -112,6 +112,55 @@ def test_runtime_adapter_bundle_is_explicit_and_defaults_remain_production() -> 
     assert bundle.commenter_factory is None
 
 
+def test_coding_agent_runtime_registry_covers_supported_providers_without_fallback() -> None:
+    from src.developer_workflow.coding_agent_runtime import (
+        CODING_AGENT_RUNTIME_ADAPTERS,
+        coding_agent_runtime_adapter,
+    )
+    from src.developer_workflow.coding_agents import SUPPORTED_CODING_AGENT_KEYS
+
+    assert frozenset(CODING_AGENT_RUNTIME_ADAPTERS) == SUPPORTED_CODING_AGENT_KEYS
+    assert coding_agent_runtime_adapter("codex").key == "codex"
+    assert coding_agent_runtime_adapter("claude").key == "claude"
+    with pytest.raises(ValueError, match="unsupported coding agent"):
+        coding_agent_runtime_adapter("missing")
+
+
+def test_claude_runtime_ignores_legacy_codex_factory(tmp_path: Path) -> None:
+    from src.developer_workflow.runtime_bootstrap import (
+        RuntimeAdapterBundle,
+        RuntimeBootstrapper,
+    )
+
+    active = _active(tmp_path).validated_update(
+        runtime=_active(tmp_path).runtime.validated_update(coding_agent="claude"),
+        credential_kinds=(
+            SecretKind.ONES_EMAIL,
+            SecretKind.ONES_PASSWORD,
+            SecretKind.PROVIDER_TOKEN,
+        ),
+    )
+    secrets = RuntimeSecrets(
+        {
+            SecretKind.ONES_EMAIL: "stored@example.invalid",
+            SecretKind.ONES_PASSWORD: "STORED-PASSWORD",
+            SecretKind.PROVIDER_TOKEN: "STORED-PROVIDER-TOKEN",
+        }
+    )
+
+    handle = RuntimeBootstrapper(
+        private_root_preparer=lambda roots: tuple(Path(root) for root in roots),
+        sandbox_profile_validator=lambda profile, source, environment: None,
+        ambient_environment=lambda: {"PATH": os.environ.get("PATH", "")},
+        adapters=RuntimeAdapterBundle(
+            codex_factory=lambda *_args: (_ for _ in ()).throw(
+                AssertionError("Claude must not invoke the legacy Codex factory")
+            )
+        ),
+    ).build(active, secrets)
+    handle.close()
+
+
 def test_bootstrap_rejects_incompatible_generic_coding_agent_factory(
     tmp_path: Path,
 ) -> None:

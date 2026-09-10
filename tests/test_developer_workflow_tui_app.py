@@ -19,6 +19,7 @@ from textual.widgets import (
     SelectionList,
     Static,
     TabbedContent,
+    TextArea,
 )
 
 from src.developer_workflow import tui
@@ -54,6 +55,7 @@ from src.developer_workflow.tui.screens import (
     DashboardScreen,
     DefectWizardScreen,
     HelpScreen,
+    MergeReadinessModal,
     RequirementWizardScreen,
     PublicationResumeModal,
     RepositoryMappingModal,
@@ -1833,6 +1835,124 @@ class ActionController(FakeController):
 
 def action_app_factory(controller: ActionController) -> DeveloperWorkflowTuiApp:
     return DeveloperWorkflowTuiApp(controller, 3)  # type: ignore[arg-type]
+
+
+class MergeReadinessController(ActionController):
+    def __init__(self, *, draft_pr: bool = True, pr_created: bool = True) -> None:
+        super().__init__(WorkflowState.WAITING_PR_VERIFICATION)
+        self.draft_pr = draft_pr
+        self.pr_created = pr_created
+        self.readiness_actor = ""
+        self.readiness_evidence = ""
+
+    def _detail(self) -> RunDetail:
+        repositories = tuple(
+            replace(
+                item,
+                pr_url=(
+                    f"https://git.example.test/pr/{index}"
+                    if self.pr_created
+                    else ""
+                ),
+                pushed=self.pr_created,
+            )
+            for index, item in enumerate(self.repositories, 1)
+        )
+        return replace(
+            super()._detail(),
+            repositories=repositories,
+            publication=PublicationView(
+                repositories=repositories,
+                comment_id="comment" if self.pr_created else "",
+                error="",
+            ),
+            draft_pr=self.draft_pr,
+            merge_readiness_status=("passed" if self.readiness_actor else ""),
+            merge_readiness_actor=self.readiness_actor,
+            merge_readiness_evidence=self.readiness_evidence,
+        )
+
+    def record_merge_readiness(
+        self,
+        run_id: str,
+        actor: str,
+        evidence: str,
+        expected_version: int,
+    ) -> RunDetail:
+        self._current(expected_version)
+        self.action_calls.append(
+            ("record-merge-readiness", run_id, actor, evidence, expected_version)
+        )
+        self.readiness_actor = actor
+        self.readiness_evidence = evidence
+        self.version += 1
+        return self._detail()
+
+
+@pytest.mark.asyncio
+async def test_draft_pr_human_review_records_evidence_without_remote_effects() -> None:
+    controller = MergeReadinessController()
+    async with action_app_factory(controller).run_test(size=(120, 38)) as pilot:
+        action = pilot.app.screen.query_one(
+            "#action-record-merge-readiness", Button
+        )
+        assert action.display
+        await pilot.click(action)
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, MergeReadinessModal)
+        dialog_text = pilot.app.export_screenshot()
+        assert "不会自动合并" in dialog_text
+        assert "不会自动" in dialog_text and "发布" in dialog_text
+
+        await pilot.click("#confirm-merge-readiness")
+        assert _plain(pilot.app.screen.query_one("#modal-notice")) == (
+            "请填写有效的审核人和验证证据。"
+        )
+        pilot.app.screen.query_one("#merge-readiness-actor", Input).value = "reviewer"
+        pilot.app.screen.query_one("#merge-readiness-evidence", TextArea).load_text(
+            "macOS 实机验证通过\n证据：PR 评论 #42"
+        )
+        await pilot.pause()
+        pilot.app.screen.query_one("#confirm-merge-readiness", Button).press()
+        async with asyncio.timeout(2):
+            while not controller.action_calls:
+                await asyncio.sleep(0)
+        await pilot.pause()
+
+        assert controller.action_calls == [
+            (
+                "record-merge-readiness",
+                "run-action",
+                "reviewer",
+                "macOS 实机验证通过；证据：PR 评论 #42",
+                7,
+            )
+        ]
+        assert controller.remote_effects == []
+        assert not pilot.app.screen.query_one(
+            "#action-record-merge-readiness", Button
+        ).display
+        publication = _plain(pilot.app.screen.query_one("#publication-content"))
+        assert "合并前人工验证" in publication
+        assert "reviewer" in publication
+        assert "不会自动合并" in publication
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("draft_pr", "pr_created"),
+    [(False, True), (True, False)],
+)
+async def test_merge_readiness_action_requires_delivered_draft_pr(
+    draft_pr: bool, pr_created: bool
+) -> None:
+    controller = MergeReadinessController(
+        draft_pr=draft_pr, pr_created=pr_created
+    )
+    async with action_app_factory(controller).run_test() as pilot:
+        assert not pilot.app.screen.query_one(
+            "#action-record-merge-readiness", Button
+        ).display
 
 
 @pytest.mark.asyncio

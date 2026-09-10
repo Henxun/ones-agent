@@ -49,6 +49,9 @@ class WorkflowStatusRef:
 class IssueTypeRef:
     id: str = ""
     name: str = ""
+    built_in: bool = False
+    detail_type: str = ""
+    component_type: str = ""
 
 
 @dataclass(slots=True)
@@ -126,6 +129,7 @@ class RequirementRecord:
     iteration: ProjectRef = field(default_factory=ProjectRef)
     assignee: IdentityRef | None = None
     status: StatusRef = field(default_factory=StatusRef)
+    issue_type: IssueTypeRef = field(default_factory=IssueTypeRef)
     description: str = ""
     wiki_refs: list[WikiPageRef] = field(default_factory=list)
     source: str = "ones"

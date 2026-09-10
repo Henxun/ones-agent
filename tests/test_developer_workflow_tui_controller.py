@@ -22,6 +22,12 @@ from src.developer_workflow.orchestrator import (
     InvalidWorkflowAction,
 )
 from src.developer_workflow.state_store import FileRunStore
+from src.developer_workflow.schedules import (
+    Schedule,
+    ScheduleRunItemStatus,
+    ScheduleRunStatus,
+    ScheduleStore,
+)
 from src.developer_workflow.tui.controller import (
     CandidateSessionView,
     StaleCandidateError,
@@ -34,6 +40,7 @@ from src.developer_workflow.tui.models import (
     RunDetail,
     RunFilter,
     TuiDisplayError,
+    WorkspaceSummary,
 )
 from src.developer_workflow.tui.run_index import RunIndex
 
@@ -52,6 +59,17 @@ class Candidates:
 
 
 class Requirements:
+    async def list_project_issue_types(self, project):
+        assert project == "P"
+        return [
+            IssueTypeRef(
+                id="requirement-type",
+                name="Requirement",
+                component_type="requirement",
+            ),
+            IssueTypeRef(id="story", name="Story", component_type="story"),
+        ]
+
     async def list_requirements(self, **kwargs):
         self.kwargs = kwargs
         return [
@@ -62,8 +80,29 @@ class Requirements:
                 project=ProjectRef(id="P", name="Project"),
                 iteration=ProjectRef(id="I", name="Iteration"),
                 status=StatusRef(id="todo", name="Todo"),
+                issue_type=IssueTypeRef(
+                    id="requirement-type",
+                    name="Requirement",
+                    detail_type="requirement",
+                ),
             )
         ]
+
+    async def list_role_members(self, project):
+        assert project == "P"
+        return [{"members": ["A"]}]
+
+    async def get_current_user_id(self):
+        return "A"
+
+    async def list_team_members(self, *, uuids=None):
+        assert uuids in (["A"], None)
+        return [{"uuid": "A", "name": "Alice"}]
+
+    async def list_defect_statuses(self, project, issue_type):
+        assert project == "P"
+        assert issue_type in {"requirement-type", "story"}
+        return [WorkflowStatusRef(id="todo", name="Todo", default=True)]
 
 
 class LoopRecordingCandidates:
@@ -93,8 +132,8 @@ class Orchestrator:
         self.calls.append(("start_defect", *args))
         return self.run
 
-    def start_requirement(self, item_id):
-        self.calls.append(("start_requirement", item_id))
+    def start_requirement(self, item_id, *, expected_scope=None):
+        self.calls.append(("start_requirement", item_id, expected_scope))
         return self.run
 
     def confirm_repository(self, run_id, mapping_key, *, expected_version=None):
@@ -107,6 +146,26 @@ class Orchestrator:
 
     def cancel(self, run_id, actor, *, expected_version=None):
         self.calls.append(("cancel", run_id, actor, expected_version))
+        return self.run
+
+    def record_merge_readiness(
+        self, run_id, actor, evidence, *, expected_version=None
+    ):
+        self.calls.append(
+            ("record_merge_readiness", run_id, actor, evidence, expected_version)
+        )
+        return self.run
+
+    def get_merge_readiness(self, run_id, *, expected_version):
+        self.calls.append(("get_merge_readiness", run_id, expected_version))
+        return self.run
+
+    def clear_merge_readiness(
+        self, run_id, actor, reason, *, expected_version
+    ):
+        self.calls.append(
+            ("clear_merge_readiness", run_id, actor, reason, expected_version)
+        )
         return self.run
 
 
@@ -318,13 +377,56 @@ def test_query_requirements_uses_bounded_gateway_session():
         controller.close()
 
 
+@pytest.mark.parametrize(
+    ("assignee", "statuses"),
+    [("unknown-user", ("todo",)), ("A", ("unknown-status",))],
+)
+def test_query_requirements_rejects_values_outside_ones_options(
+    assignee, statuses
+):
+    orchestrator = Orchestrator()
+    gateway = Requirements()
+    orchestrator.requirement_flow = SimpleNamespace(gateway=gateway)
+    controller = TuiController(orchestrator, Index())
+    try:
+        with pytest.raises(
+            TuiControllerError, match="^candidate snapshot is invalid$"
+        ):
+            controller.query_requirements(
+                "P", "I", assignee, statuses, "requirement-type"
+            )
+        assert not hasattr(gateway, "kwargs")
+    finally:
+        controller.close()
+
+
 def test_requirement_filter_options_use_project_metadata_and_select_requirement():
     class RequirementTypes:
         async def list_project_issue_types(self, project):
             assert project == "P"
             return [
-                IssueTypeRef(id="task-type", name="任务"),
-                IssueTypeRef(id="requirement-type", name="需求"),
+                IssueTypeRef(id="task-type", name="任务", component_type="task"),
+                IssueTypeRef(
+                    id="requirement-type", name="需求", component_type="requirement"
+                ),
+            ]
+
+        async def list_role_members(self, project):
+            assert project == "P"
+            return [{"members": ["user-1"]}]
+
+        async def get_current_user_id(self):
+            return "user-1"
+
+        async def list_team_members(self, *, uuids=None):
+            assert uuids == ["user-1"]
+            return [{"uuid": "user-1", "name": "Alice"}]
+
+        async def list_defect_statuses(self, project, issue_type):
+            assert (project, issue_type) == ("P", "requirement-type")
+            return [
+                WorkflowStatusRef(id="todo", name="待处理", default=True),
+                WorkflowStatusRef(id="done", name="已完成"),
             ]
 
     orchestrator = Orchestrator()
@@ -332,19 +434,70 @@ def test_requirement_filter_options_use_project_metadata_and_select_requirement(
     controller = TuiController(orchestrator, Index())
     try:
         options = controller.load_requirement_filter_options("P")
-        assert [item.id for item in options.issue_types] == [
-            "task-type",
-            "requirement-type",
-        ]
+        assert [item.id for item in options.issue_types] == ["requirement-type"]
         assert [item.id for item in options.issue_types if item.selected] == [
             "requirement-type"
         ]
+        assert [(item.id, item.name, item.selected) for item in options.assignees] == [
+            ("user-1", "Alice", True)
+        ]
+        assert [(item.id, item.name, item.selected) for item in options.statuses] == [
+            ("todo", "待处理", True),
+            ("done", "已完成", False),
+        ]
+
+    finally:
+        controller.close()
+
+
+def test_requirement_filter_options_fail_closed_without_requirement_component():
+    class TaskTypes:
+        async def list_project_issue_types(self, _project):
+            return [IssueTypeRef(id="task-type", name="Task", component_type="task")]
+
+    orchestrator = Orchestrator()
+    orchestrator.requirement_flow = SimpleNamespace(gateway=TaskTypes())
+    controller = TuiController(orchestrator, Index())
+    try:
+        with pytest.raises(
+            TuiControllerError, match="^candidate query is unavailable$"
+        ):
+            controller.load_requirement_filter_options("P")
+    finally:
+        controller.close()
+
+
+def test_requirement_query_rejects_non_selected_issue_type():
+    class WrongTypeRequirements(Requirements):
+        async def list_requirements(self, **_kwargs):
+            return [
+                RequirementRecord(
+                    requirement_id="R-task",
+                    number="TASK-1",
+                    title="Not a requirement",
+                    project=ProjectRef(id="P", name="Project"),
+                    iteration=ProjectRef(id="I", name="Iteration"),
+                    status=StatusRef(id="todo", name="Todo"),
+                    issue_type=IssueTypeRef(
+                        id="task-type", name="Task", detail_type="task"
+                    ),
+                )
+            ]
+
+    orchestrator = Orchestrator()
+    orchestrator.requirement_flow = SimpleNamespace(gateway=WrongTypeRequirements())
+    controller = TuiController(orchestrator, Index())
+    try:
+        with pytest.raises(
+            TuiControllerError, match="^candidate snapshot is invalid$"
+        ):
+            controller.query_requirements("P", "I", "", (), "requirement-type")
     finally:
         controller.close()
 
 
 def test_empty_requirement_query_does_not_consume_session_capacity():
-    class EmptyRequirements:
+    class EmptyRequirements(Requirements):
         async def list_requirements(self, **_kwargs):
             return []
 
@@ -368,7 +521,7 @@ def test_empty_requirement_query_does_not_consume_session_capacity():
 def test_requirement_query_rejects_candidates_outside_workspace_scope(
     project_id, iteration_id
 ):
-    class MixedScopeRequirements:
+    class MixedScopeRequirements(Requirements):
         async def list_requirements(self, **_kwargs):
             return [
                 RequirementRecord(
@@ -378,6 +531,9 @@ def test_requirement_query_rejects_candidates_outside_workspace_scope(
                     project=ProjectRef(id=project_id, name="Project"),
                     iteration=ProjectRef(id=iteration_id, name="Iteration"),
                     status=StatusRef(id="todo", name="Todo"),
+                    issue_type=IssueTypeRef(
+                        id="story", name="Requirement", detail_type="requirement"
+                    ),
                 )
             ]
 
@@ -413,7 +569,7 @@ def test_requirement_candidate_session_is_one_shot():
         ):
             controller.start_requirement("R-1", session_id)
         assert [call for call in orchestrator.calls if call[0] == "start_requirement"] == [
-            ("start_requirement", "R-1")
+            ("start_requirement", "R-1", ("P", "I", "requirement-type"))
         ]
     finally:
         controller.close()
@@ -949,8 +1105,34 @@ def test_sync_adapters_return_only_views_and_forward_expected_versions():
     assert isinstance(controller.start_requirement("REQ-1"), RunDetail)
     assert isinstance(controller.confirm_repository("r", "repo", 3), RunDetail)
     assert isinstance(controller.resume("r", 4), RunDetail)
+    assert isinstance(
+        controller.record_merge_readiness("r", "reviewer", "hardware passed", 4),
+        RunDetail,
+    )
+    assert isinstance(controller.get_merge_readiness("r", 4), RunDetail)
+    assert isinstance(
+        controller.clear_merge_readiness(
+            "r", "reviewer", "evidence invalidated", 4
+        ),
+        RunDetail,
+    )
     assert ("confirm", "r", "repo", 3) in orchestrator.calls
     assert ("resume", "r", 4) in orchestrator.calls
+    assert (
+        "record_merge_readiness",
+        "r",
+        "reviewer",
+        "hardware passed",
+        4,
+    ) in orchestrator.calls
+    assert ("get_merge_readiness", "r", 4) in orchestrator.calls
+    assert (
+        "clear_merge_readiness",
+        "r",
+        "reviewer",
+        "evidence invalidated",
+        4,
+    ) in orchestrator.calls
     assert not any(
         call[0] == "show" and call[2] is False
         for call in orchestrator.calls
@@ -1098,6 +1280,83 @@ def test_read_adapters_sanitize_lower_layer_errors():
     with pytest.raises(TuiControllerError) as shown:
         controller.show("run")
     assert "TOKEN-INNER" not in str(shown.value)
+
+
+def test_schedule_history_adapters_are_bounded_display_safe_and_workspace_scoped(tmp_path):
+    store = ScheduleStore(tmp_path / "schedules")
+    saved = store.save(
+        Schedule(
+            workspace="workspace",
+            project="project",
+            iteration="iteration",
+            name="Nightly scan",
+            assignee="member",
+            status_ids=("open",),
+            enabled=False,
+        ),
+        expected_version=None,
+        now=0,
+    )
+    _, run = store.create_manual_run(saved.id, expected_version=saved.version, now=10)
+    store.record_run_item(
+        run.id,
+        run.lease_token,
+        defect_id="DEFECT-1",
+        defect_name="Camera offline",
+        status=ScheduleRunItemStatus.NEEDS_ATTENTION,
+        reason="manual check required",
+        now=11,
+    )
+    store.finish_run(
+        run.id,
+        run.lease_token,
+        status=ScheduleRunStatus.FAILED,
+        discovered_count=1,
+        skipped_count=0,
+        started_count=0,
+        failed_count=1,
+        message="worker interrupted",
+        error_stage="dispatch",
+        now=12,
+    )
+    workspace = WorkspaceSummary(
+        key="workspace",
+        project_id="project",
+        iteration_id="iteration",
+        repositories=("repo",),
+    )
+    other_workspace = WorkspaceSummary(
+        key="other",
+        project_id="project",
+        iteration_id="iteration",
+        repositories=("repo",),
+    )
+    controller = TuiController(Orchestrator(), Index())
+    controller.schedule_store = store
+    controller.list_workspaces = lambda: (workspace, other_workspace)
+    try:
+        history = controller.list_schedule_runs(
+            workspace, schedule_id=saved.id, limit=1
+        )
+        items = controller.list_schedule_run_items(workspace, run.id, limit=1)
+        with pytest.raises(
+            TuiControllerError, match="^定时任务运行历史不可用$"
+        ):
+            controller.list_schedule_run_items(other_workspace, run.id)
+        with pytest.raises(
+            TuiControllerError, match="^定时任务运行历史不可用$"
+        ):
+            controller.list_schedule_runs(workspace, limit=101)
+    finally:
+        controller.close()
+
+    assert len(history) == 1
+    assert history[0].schedule_name == "Nightly scan"
+    assert history[0].status is ScheduleRunStatus.FAILED
+    assert history[0].interruption_reason == "worker interrupted"
+    assert len(items) == 1
+    assert items[0].defect_id == "DEFECT-1"
+    assert items[0].reason == "manual check required"
 
 
 def test_generic_resume_cannot_bypass_publication_confirmation():

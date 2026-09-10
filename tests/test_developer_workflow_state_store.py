@@ -21,6 +21,7 @@ from src.developer_workflow.contracts import (
     StateEvent,
     WorkflowRun,
     WorkflowState,
+    WorkflowType,
     utc_now,
 )
 from src.developer_workflow.state_store import (
@@ -386,6 +387,32 @@ def test_public_save_cannot_mutate_store_owned_state_or_block_metadata(
     assert resumed.state is WorkflowState.CREATED
     assert resumed.resume_state is None
     assert resumed.blocked_reason == ""
+
+
+def test_authorized_requirement_scope_is_immutable_after_recovery(
+    tmp_path: Path,
+) -> None:
+    store = FileRunStore(tmp_path)
+    created = store.create(
+        WorkflowRun.new(
+            WorkflowType.REQUIREMENT,
+            "REQ-1",
+            authorized_scope=("project", "", "requirement-type"),
+        ).validated_update(run_id="e" * 32)
+    )
+    recovered = FileRunStore(tmp_path).load(created.run_id)
+
+    mutations = (
+        {"project_id": "other-project"},
+        {"iteration_id": "other-iteration"},
+        {"authorized_issue_type_id": "other-type"},
+        {"authorized_issue_type_id": ""},
+    )
+    for update in mutations:
+        with pytest.raises(InvalidRunMutationError, match="immutable"):
+            store.save(recovered.validated_update(**update), recovered.version)
+
+    assert FileRunStore(tmp_path).load(created.run_id) == recovered
 
 
 def test_publication_intent_and_effect_facts_are_immutable(tmp_path: Path) -> None:

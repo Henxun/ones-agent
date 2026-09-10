@@ -87,6 +87,26 @@ def test_new_runs_have_isolated_mutable_defaults() -> None:
     assert defect.updated_at.utcoffset() == timedelta(0)
 
 
+def test_authorized_scope_is_only_valid_for_project_scoped_requirements() -> None:
+    scoped = WorkflowRun.new(
+        WorkflowType.REQUIREMENT,
+        "REQ-1",
+        authorized_scope=("project", "", "requirement-type"),
+    )
+
+    assert scoped.project_id == "project"
+    assert scoped.iteration_id == ""
+    assert scoped.authorized_issue_type_id == "requirement-type"
+    with pytest.raises(ValueError, match="only valid for requirement runs"):
+        WorkflowRun.new(
+            WorkflowType.DEFECT,
+            "DEF-1",
+            authorized_scope=("project", "iteration", "defect-type"),
+        )
+    with pytest.raises(ValidationError, match="project-scoped requirement"):
+        scoped.validated_update(project_id="")
+
+
 def _group_repository(
     key: str,
     *,

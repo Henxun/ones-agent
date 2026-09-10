@@ -116,6 +116,7 @@ Screen {
 }
 
 ApprovalModal,
+MergeReadinessModal,
 RevisionModal,
 CancelModal,
 PublicationResumeModal {
@@ -128,15 +129,23 @@ WorkspaceDeleteConfirmation {
 }
 
 ApprovalModal > VerticalScroll,
+MergeReadinessModal > VerticalScroll,
 RevisionModal > VerticalScroll,
 CancelModal > VerticalScroll,
 PublicationResumeModal > VerticalScroll {
     height: 1fr;
 }
 
-ApprovalModal {
+ApprovalModal,
+MergeReadinessModal {
     align: center middle;
     background: $background 70%;
+}
+
+#merge-readiness-evidence {
+    height: 8;
+    border: round $primary-muted;
+    margin-bottom: 1;
 }
 
 #approval-dialog {
@@ -529,6 +538,12 @@ WorkspaceDeleteConfirmation > VerticalScroll {
 
 .workspace-requirement-filter-row Select {
     width: 1fr;
+    margin: 0 1 0 0;
+}
+
+#workspace-requirement-status-filter-button {
+    width: 1fr;
+    height: 3;
     margin: 0 1 0 0;
 }
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from rich import box
 from rich.panel import Panel
 from rich.table import Table
@@ -11,7 +13,11 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Label, Select, Static
 
-from ..coding_agents import CodingAgentInstallation, discover_coding_agents
+from ..coding_agents import (
+    CodingAgentInstallation,
+    CodingAgentProbeResult,
+    discover_coding_agents,
+)
 
 
 class CodingAgentSettingsPane(VerticalScroll):
@@ -90,17 +96,23 @@ class CodingAgentSettingsPane(VerticalScroll):
                     "保存并应用", id="coding-agent-save",
                     variant="primary", disabled=True,
                 )
+                yield Button(
+                    "验证启动", id="coding-agent-verify", disabled=True
+                )
                 yield Button("重新检测", id="coding-agent-refresh")
             yield Static("", id="coding-agent-notice", markup=False)
 
     def _render_catalog(self) -> None:
         installed = sum(item.installed for item in self._catalog)
         usable = sum(item.usable for item in self._catalog)
+        verified = sum(item.readiness_checked and item.launchable for item in self._catalog)
         summary = Text()
         summary.append("检测到 ", style="dim")
         summary.append(str(installed), style="bold cyan")
-        summary.append(" 个工具   ·   已验证可启动并可选择 ", style="dim")
+        summary.append(" 个工具   ·   已接入并可选择 ", style="dim")
         summary.append(str(usable), style="bold green")
+        summary.append(" 个   ·   已验证 ", style="dim")
+        summary.append(str(verified), style="bold cyan")
         summary.append(" 个", style="dim")
         self.query_one("#coding-agent-summary", Static).update(
             Panel(summary, border_style="cyan", padding=(0, 1))
@@ -120,7 +132,12 @@ class CodingAgentSettingsPane(VerticalScroll):
         for item in self._catalog:
             if item.usable:
                 status = Text("● 已安装", style="bold green")
-                launch = Text(f"● 可启动 · {item.version}", style="cyan")
+                if item.launchable:
+                    launch = Text(f"● 已验证 · {item.version}", style="cyan")
+                elif item.readiness_checked:
+                    launch = Text(f"● 验证失败 · {item.detail}", style="red")
+                else:
+                    launch = Text("尚未验证启动", style="yellow")
                 capability = Text("可选择 · 认证待运行时校验", style="yellow")
             elif item.installed:
                 status = Text("● 已安装", style="yellow")
@@ -141,7 +158,7 @@ class CodingAgentSettingsPane(VerticalScroll):
             Panel(
                 table,
                 title="[bold cyan]本机 Agent[/]",
-                subtitle="[dim]检测来源：PATH + 受限版本探测（最长 5 秒）[/]",
+                subtitle="[dim]自动检测仅检查 PATH，不会启动任何 Agent[/]",
                 border_style="blue",
                 padding=(0, 1),
             )
@@ -178,8 +195,8 @@ class CodingAgentSettingsPane(VerticalScroll):
                     )
                 )
                 message = (
-                    "当前 Agent 已通过启动检查；登录和执行权限将在任务启动时校验。"
-                    "选择其他可选 Agent 后保存，将安全重建工作流运行时。"
+                    "当前 Agent 已安装并接入工作流；尚未验证启动。"
+                    "可主动验证，保存时也会执行相同的受限检查。"
                 )
             else:
                 select.clear()
@@ -193,6 +210,9 @@ class CodingAgentSettingsPane(VerticalScroll):
                 )
                 message = "请安装受支持的原生 CLI，然后重新检测。"
             self.query_one("#coding-agent-notice", Static).update(message)
+            self.query_one("#coding-agent-verify", Button).disabled = (
+                not isinstance(select.value, str)
+            )
             self._loaded = True
         except Exception:
             save.disabled = True
@@ -219,13 +239,75 @@ class CodingAgentSettingsPane(VerticalScroll):
         self._busy = True
         self.app.run_worker(self._save(value), group="inline-coding-agent-save")
 
+    @on(Button.Pressed, "#coding-agent-verify")
+    def verify(self) -> None:
+        if self._busy or not self._loaded:
+            return
+        value = self.query_one("#coding-agent-select", Select).value
+        if not isinstance(value, str):
+            return
+        self._busy = True
+        self.app.run_worker(
+            self._verify(value), group="inline-coding-agent-verify"
+        )
+
+    def _record_readiness(
+        self, key: str, result: CodingAgentProbeResult
+    ) -> None:
+        selected = self.query_one("#coding-agent-select", Select).value
+        self._catalog = tuple(
+            replace(
+                item,
+                launchable=result.launchable,
+                version=result.version,
+                detail=result.diagnostic,
+                readiness_checked=True,
+            )
+            if item.key == key
+            else item
+            for item in self._catalog
+        )
+        self._render_catalog()
+        if isinstance(selected, str):
+            self.query_one("#coding-agent-select", Select).value = selected
+
+    async def _verify(self, value: str) -> None:
+        verify = self.query_one("#coding-agent-verify", Button)
+        verify.disabled = True
+        self.query_one("#coding-agent-notice", Static).update(
+            "正在执行受限启动验证…"
+        )
+        try:
+            result = await self.app.verify_inline_coding_agent(value)
+            if self.is_attached:
+                self._record_readiness(value, result)
+                self.query_one("#coding-agent-notice", Static).update(
+                    "启动验证通过；账号认证和执行权限仍将在任务运行时校验。"
+                    if result.launchable
+                    else f"启动验证失败：{result.diagnostic}"
+                )
+        except Exception:
+            if self.is_attached:
+                self.query_one("#coding-agent-notice", Static).update(
+                    "启动验证失败；未保存命令输出，请检查安装路径后重试。"
+                )
+        finally:
+            self._busy = False
+            if self.is_attached:
+                verify.disabled = False
+
     async def _save(self, value: str) -> None:
         self.query_one("#coding-agent-save", Button).disabled = True
         self.query_one("#coding-agent-notice", Static).update(
             "正在校验配置并切换工作流运行时…"
         )
         try:
-            await self.app.save_inline_coding_agent(value)
+            result = await self.app.save_inline_coding_agent(value)
+            if self.is_attached and isinstance(result, CodingAgentProbeResult):
+                self._record_readiness(value, result)
+                self.query_one("#coding-agent-notice", Static).update(
+                    "启动验证通过，配置已保存并应用。"
+                )
         except Exception:
             if self.is_attached:
                 self.query_one("#coding-agent-notice", Static).update(

@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 import src.developer_workflow.requirement_flow as requirement_flow_module
-from src.contracts import ProjectRef, RequirementRecord, StatusRef, WikiPageRef, WikiPageSnapshot
+from src.contracts import IssueTypeRef, ProjectRef, RequirementRecord, StatusRef, WikiPageRef, WikiPageSnapshot
 from src.developer_workflow.config import (
     BUILTIN_WORKSPACE_OVERRIDE,
     BUILTIN_WORKSPACE_PROFILE,
@@ -171,6 +171,9 @@ def _requirement(**updates: object) -> RequirementRecord:
         project=ProjectRef(id="project", name="Project"),
         iteration=ProjectRef(id="sprint", name="Sprint"),
         status=StatusRef(id="open", name="Open", category="open"),
+        issue_type=IssueTypeRef(
+            id="requirement-type", name="Requirement", detail_type="requirement"
+        ),
         wiki_refs=[
             WikiPageRef(
                 team_id="team",
@@ -241,12 +244,23 @@ class FakeGateway:
     wiki_by_url: dict[str, WikiPageSnapshot] = field(default_factory=dict)
     requirement_calls: int = 0
     wiki_calls: list[str] = field(default_factory=list)
+    component_type: str = "requirement"
 
     def get_normalized_requirement_sync(self, issue_id: str) -> RequirementRecord:
         self.requirement_calls += 1
         if self.error:
             raise self.error
         return self.requirement
+
+    def list_project_issue_types_sync(self, project_id: str) -> list[IssueTypeRef]:
+        assert project_id == self.requirement.project.id
+        return [
+            IssueTypeRef(
+                id=self.requirement.issue_type.id,
+                name=self.requirement.issue_type.name,
+                component_type=self.component_type,
+            )
+        ]
 
     def get_wiki_snapshot_sync(self, url: str) -> WikiPageSnapshot:
         self.wiki_calls.append(url)
@@ -416,6 +430,70 @@ def _flow(tmp_path: Path, *, run: WorkflowRun | None = None, gateway: FakeGatewa
         test_runner=tests or FakeTestRunner(),
     )
     return flow, store
+
+
+def test_authorized_requirement_scope_survives_and_blocks_moved_item(
+    tmp_path: Path,
+) -> None:
+    run = WorkflowRun.new(
+        "requirement",
+        "REQ-1",
+        authorized_scope=("project", "sprint", "requirement-type"),
+    ).validated_update(run_id="1" * 32, version=1)
+    gateway = FakeGateway(
+        requirement=_requirement(project=ProjectRef(id="other-project", name="Other"))
+    )
+    repository = FakeRepository()
+    flow, store = _flow(
+        tmp_path, run=run, gateway=gateway, repository=repository
+    )
+
+    result = flow.execute(store.run)
+
+    assert result.state is WorkflowState.BLOCKED
+    assert result.resume_state is WorkflowState.READING_ONES
+    assert result.authorized_issue_type_id == "requirement-type"
+    assert repository.prepare_calls == 0
+
+
+def test_direct_requirement_start_rejects_non_requirement_component(
+    tmp_path: Path,
+) -> None:
+    run = WorkflowRun.new("requirement", "REQ-1").validated_update(
+        run_id="3" * 32,
+        version=1,
+    )
+    repository = FakeRepository()
+    flow, store = _flow(
+        tmp_path,
+        run=run,
+        gateway=FakeGateway(component_type="task"),
+        repository=repository,
+    )
+
+    result = flow.execute(store.run)
+
+    assert result.state is WorkflowState.BLOCKED
+    assert result.resume_state is WorkflowState.READING_ONES
+    assert result.blocked_reason == "ONES work item is not a requirement"
+    assert repository.prepare_calls == 0
+
+
+def test_authorized_requirement_scope_preserves_optional_iteration_wildcard(
+    tmp_path: Path,
+) -> None:
+    run = WorkflowRun.new(
+        "requirement",
+        "REQ-1",
+        authorized_scope=("project", "", "requirement-type"),
+    ).validated_update(run_id="2" * 32, version=1)
+    flow, store = _flow(tmp_path, run=run, gateway=FakeGateway())
+
+    result = flow.execute(store.run)
+
+    assert result.iteration_id == ""
+    assert result.authorized_issue_type_id == "requirement-type"
+    assert result.blocked_reason != "ONES requirement no longer matches the authorized query"
 
 
 def test_repository_group_runs_all_tests_and_persists_each_snapshot(

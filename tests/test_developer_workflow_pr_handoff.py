@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from types import SimpleNamespace
 import httpx
 import pytest
 
@@ -10,7 +11,8 @@ from src.developer_workflow.approval import approval_fingerprint, issue_approval
 from src.developer_workflow.contracts import CodexResult, WorkflowState, PreparedWorktree, RepositorySnapshot
 from src.developer_workflow.pr_provider import PullRequestProviderError
 from src.developer_workflow.publisher import Publisher, PublicationBlocked
-from src.developer_workflow.state_store import InvalidRunTransitionError
+from src.developer_workflow.state_store import InvalidRunMutationError, InvalidRunTransitionError
+from src.developer_workflow.orchestrator import DeveloperWorkflowOrchestrator, InvalidWorkflowAction
 from src.developer_workflow.tui.models import RunDetail, DangerousActionRequest
 from src.developer_workflow.ones_comment import build_comment_text
 from test_developer_workflow_verification import reviewed, need
@@ -184,6 +186,183 @@ def test_single_repo_draft_delivery_is_not_completion_and_is_idempotent(tmp_path
     detail = RunDetail.from_run(delivered)
     assert detail.draft_pr and not detail.can_verify and not detail.can_request_review_repair
     assert "等待 PR 人工验证" in detail.status_message
+
+
+def test_post_draft_human_verification_records_merge_readiness_only(tmp_path):
+    store, run, package = draft_waiting(tmp_path)
+    publisher = _publisher(
+        store,
+        run,
+        repo=FakeRepository(),
+        pr=DraftPR(),
+        commenter=FakeCommenter(),
+        rebuild=lambda _: package,
+    )
+    delivered = publisher.publish(run)
+    service = DeveloperWorkflowOrchestrator(
+        store=store,
+        config=SimpleNamespace(),
+        defect_flow=SimpleNamespace(),
+        requirement_flow=SimpleNamespace(),
+        defect_candidates=SimpleNamespace(),
+        publisher=SimpleNamespace(publish=lambda _: pytest.fail("must not publish")),
+    )
+
+    recorded = service.record_merge_readiness(
+        delivered.run_id,
+        "reviewer",
+        "Verified the deferred checks on the Draft PR commit.",
+        expected_version=delivered.version,
+    )
+
+    assert recorded.state is WorkflowState.WAITING_PR_VERIFICATION
+    assert recorded.publication == delivered.publication
+    assert recorded.merge_readiness is not None
+    assert recorded.merge_readiness.status == "passed"
+    assert recorded.merge_readiness_history == (recorded.merge_readiness,)
+    assert recorded.merge_readiness.approval_fingerprint == recorded.approval.fingerprint
+    assert (
+        recorded.merge_readiness.verification_digest,
+        recorded.merge_readiness.publication_digest,
+    ) == h.merge_readiness_binding(recorded)
+    assert service.record_merge_readiness(
+        recorded.run_id,
+        "reviewer",
+        "Verified the deferred checks on the Draft PR commit.",
+        expected_version=recorded.version,
+    ) == recorded
+    with pytest.raises(InvalidRunTransitionError):
+        store.transition(
+            recorded.run_id,
+            recorded.version,
+            WorkflowState.COMPLETED,
+            "must still wait for platform merge",
+        )
+
+
+def test_merge_readiness_clear_and_rerecord_are_append_only(tmp_path):
+    store, waiting, package = draft_waiting(tmp_path)
+    delivered = _publisher(
+        store,
+        waiting,
+        repo=FakeRepository(),
+        pr=DraftPR(),
+        commenter=FakeCommenter(),
+        rebuild=lambda _: package,
+    ).publish(waiting)
+    service = DeveloperWorkflowOrchestrator(
+        store=store,
+        config=SimpleNamespace(),
+        defect_flow=SimpleNamespace(),
+        requirement_flow=SimpleNamespace(),
+        defect_candidates=SimpleNamespace(),
+        publisher=SimpleNamespace(publish=lambda _: pytest.fail("must not publish")),
+    )
+
+    passed = service.record_merge_readiness(
+        delivered.run_id,
+        "reviewer-a",
+        "Verified on the Draft PR commit.",
+        expected_version=delivered.version,
+    )
+    queried = service.get_merge_readiness(
+        passed.run_id, expected_version=passed.version
+    )
+    assert queried == passed
+    with pytest.raises(InvalidWorkflowAction, match="workflow changed"):
+        service.clear_merge_readiness(
+            passed.run_id,
+            "reviewer-a",
+            "Evidence invalidated.",
+            expected_version=delivered.version,
+        )
+
+    cleared = service.clear_merge_readiness(
+        passed.run_id,
+        "reviewer-b",
+        "The tested artifact was replaced.",
+        expected_version=passed.version,
+    )
+    assert cleared.state is WorkflowState.WAITING_PR_VERIFICATION
+    assert cleared.publication == delivered.publication
+    assert cleared.merge_readiness is None
+    assert [item.status for item in cleared.merge_readiness_history] == [
+        "passed",
+        "cleared",
+    ]
+    assert {
+        item.approval_fingerprint for item in cleared.merge_readiness_history
+    } == {cleared.approval.fingerprint}
+    verification_digest, publication_digest = h.merge_readiness_binding(cleared)
+    assert {
+        item.verification_digest for item in cleared.merge_readiness_history
+    } == {verification_digest}
+    assert {
+        item.publication_digest for item in cleared.merge_readiness_history
+    } == {publication_digest}
+    with pytest.raises(InvalidWorkflowAction, match="active merge readiness"):
+        service.clear_merge_readiness(
+            cleared.run_id,
+            "reviewer-b",
+            "Duplicate clear.",
+            expected_version=cleared.version,
+        )
+
+    rerecorded = service.record_merge_readiness(
+        cleared.run_id,
+        "reviewer-c",
+        "Re-verified the replacement artifact.",
+        expected_version=cleared.version,
+    )
+    assert rerecorded.state is WorkflowState.WAITING_PR_VERIFICATION
+    assert rerecorded.merge_readiness is not None
+    assert [item.status for item in rerecorded.merge_readiness_history] == [
+        "passed",
+        "cleared",
+        "passed",
+    ]
+    with pytest.raises(InvalidRunTransitionError):
+        store.transition(
+            rerecorded.run_id,
+            rerecorded.version,
+            WorkflowState.COMPLETED,
+            "readiness does not complete the run",
+        )
+
+
+def test_merge_readiness_rejects_wrong_state_and_is_immutable(tmp_path):
+    store, waiting, _ = draft_waiting(tmp_path)
+    service = DeveloperWorkflowOrchestrator(
+        store=store,
+        config=SimpleNamespace(),
+        defect_flow=SimpleNamespace(),
+        requirement_flow=SimpleNamespace(),
+        defect_candidates=SimpleNamespace(),
+        publisher=SimpleNamespace(),
+    )
+    with pytest.raises(InvalidWorkflowAction, match="WAITING_PR_VERIFICATION"):
+        service.record_merge_readiness(
+            waiting.run_id, "reviewer", "Checked.", expected_version=waiting.version
+        )
+
+    delivered = _publisher(
+        store,
+        waiting,
+        repo=FakeRepository(),
+        pr=DraftPR(),
+        commenter=FakeCommenter(),
+        rebuild=lambda _: waiting.approval,
+    ).publish(waiting)
+    recorded = service.record_merge_readiness(
+        delivered.run_id, "reviewer", "Checked.", expected_version=delivered.version
+    )
+    replacement = recorded.merge_readiness.model_copy(
+        update={"actor": "another reviewer"}
+    )
+    with pytest.raises(InvalidRunMutationError, match="immutable"):
+        store.save(
+            recorded.validated_update(merge_readiness=replacement), recorded.version
+        )
 
 
 def test_pending_status_failure_does_not_publish_ready_pr(tmp_path):

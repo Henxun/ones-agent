@@ -22,11 +22,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 from urllib.parse import unquote, urlsplit
 
 from jsonschema import Draft202012Validator
 
+from .coding_agents import CodingAgentCapabilities, coding_agent_definition
 from .codex_runtime import (
     CodexRuntimePreparer,
     LockedPrivateCodex,
@@ -1767,6 +1768,8 @@ def validate_codex_auth_source(source: Mapping[str, str]) -> Path | None:
 class GuardedCodingAgentRunner(ABC):
     """Shared schema, repository, evidence and activity guards for all agents."""
 
+    provider_key: ClassVar[str] = ""
+
     run_root: Path
     repository: RepositoryGuard | WorktreeRepository
     command_executor: CommandExecutor = field(default=_bounded_subprocess, repr=False)
@@ -1788,6 +1791,11 @@ class GuardedCodingAgentRunner(ABC):
     _activity_lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False
     )
+
+    @property
+    def capabilities(self) -> CodingAgentCapabilities:
+        """Return the selected provider's catalog-owned runtime contract."""
+        return coding_agent_definition(self.provider_key).capabilities
 
     def __post_init__(self) -> None:
         if not self.run_root.is_absolute():
@@ -2984,6 +2992,8 @@ class GuardedCodingAgentRunner(ABC):
 @dataclass(slots=True)
 class CodexRunner(GuardedCodingAgentRunner):
     """Codex CLI transport over the shared guarded runner."""
+
+    provider_key: ClassVar[str] = "codex"
 
     command_resolver: Callable[[], CodexCommand] = field(
         default=resolve_codex_command, repr=False

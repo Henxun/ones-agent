@@ -34,6 +34,7 @@ from textual.widgets import (
     Static,
     TabbedContent,
     TabPane,
+    TextArea,
 )
 
 from ..contracts import WorkflowState, WorkflowType
@@ -1285,6 +1286,15 @@ class RequirementWizardScreen(_MappingWizardScreen):
             self._show_notice("正在准备需求工作流…")
             await self._select_requirement(self._selected_candidate)
 
+    def on_unmount(self) -> None:
+        session_id = self._requirement_session_id
+        self._requirement_session_id = None
+        discard_session = getattr(
+            self._controller, "discard_requirement_session", None
+        )
+        if session_id is not None and callable(discard_session):
+            discard_session(session_id)
+
     async def _query_requirements(self) -> None:
         issue_type_id = self.query_one("#requirement-type-id", Input).value.strip()
         status_values = self.query_one("#requirement-status-ids", Input).value
@@ -1601,6 +1611,14 @@ class CancelSubmission:
     actor: str
 
 
+@dataclass(frozen=True, slots=True)
+class MergeReadinessSubmission:
+    run_id: str
+    version: int
+    actor: str
+    evidence: str
+
+
 class _DangerousActionModal(ModalScreen[object | None]):
     """Explicit-confirmation shell; plain Enter is deliberately inert."""
 
@@ -1755,6 +1773,112 @@ class ApprovalModal(_DangerousActionModal):
         if event.button.id == "confirm-approve":
             self._confirm()
         elif event.button.id == "cancel-action":
+            self.action_back()
+
+
+class MergeReadinessModal(ModalScreen[MergeReadinessSubmission | None]):
+    """Record human PR verification without granting merge or release authority."""
+
+    BINDINGS = [
+        Binding("escape", "back", "Back", priority=True),
+        Binding("enter", "ignore_enter", "", show=False, priority=True),
+        Binding("ctrl+enter", "confirm", "Record evidence", priority=True),
+    ]
+
+    def __init__(self, detail: RunDetail) -> None:
+        super().__init__(id="merge-readiness-modal")
+        self.detail = detail
+
+    def compose(self) -> ComposeResult:
+        summary = self.detail.summary
+        with Vertical(id="approval-dialog"):
+            yield Label("记录 PR 人工审核与验证", id="approval-title")
+            yield Static(
+                detail_rendering.literal(
+                    f"工作项 {summary.work_item_id} · Draft PR 已创建"
+                ),
+                id="approval-subtitle",
+            )
+            with VerticalScroll(id="approval-body"):
+                with Vertical(classes="approval-card approval-warning"):
+                    yield Label("记录范围", classes="approval-heading")
+                    yield Static(
+                        "请填写实际完成审核与验证的人员和证据。此记录仅表示当前 Draft PR 的合并前检查已完成。",
+                        markup=False,
+                    )
+                    yield Static(
+                        "不会自动合并 PR、发布制品、修改分支保护或把任务标记为完成。",
+                        markup=False,
+                    )
+                yield Label("审核人", classes="approval-heading")
+                yield Input(
+                    placeholder="填写实际审核人（必填）",
+                    id="merge-readiness-actor",
+                    max_length=128,
+                )
+                yield Label("验证证据", classes="approval-heading")
+                yield TextArea(
+                    id="merge-readiness-evidence",
+                    language=None,
+                )
+                yield Static(
+                    "建议包含验证环境、步骤、结果及日志/截图或 PR 评论位置。证据必须对应当前 Draft PR。",
+                    classes="approval-subtitle",
+                    markup=False,
+                )
+            with Vertical(id="approval-footer"):
+                yield Static("", id="modal-notice", markup=False)
+                with Horizontal(id="approval-buttons"):
+                    yield Button("返回", id="cancel-merge-readiness")
+                    yield Button(
+                        "记录审核证据",
+                        id="confirm-merge-readiness",
+                        variant="warning",
+                    )
+
+    def action_back(self) -> None:
+        self.dismiss(None)
+
+    def action_ignore_enter(self) -> None:
+        return
+
+    def action_confirm(self) -> None:
+        self._confirm()
+
+    def _confirm(self) -> None:
+        actor = _valid_action_text(
+            self.query_one("#merge-readiness-actor", Input).value,
+            maximum=128,
+        )
+        evidence = _valid_action_text(
+            "；".join(
+                line.strip()
+                for line in self.query_one(
+                    "#merge-readiness-evidence", TextArea
+                ).text.splitlines()
+                if line.strip()
+            ),
+            maximum=4096,
+        )
+        if actor is None or evidence is None:
+            self.query_one("#modal-notice", Static).update(
+                "请填写有效的审核人和验证证据。"
+            )
+            return
+        self.dismiss(
+            MergeReadinessSubmission(
+                run_id=self.detail.summary.run_id,
+                version=self.detail.summary.version,
+                actor=actor,
+                evidence=evidence,
+            )
+        )
+
+    @on(Button.Pressed)
+    def _pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "confirm-merge-readiness":
+            self._confirm()
+        elif event.button.id == "cancel-merge-readiness":
             self.action_back()
 
 
@@ -2198,16 +2322,21 @@ class DefectStatusFilterScreen(ModalScreen[tuple[str, ...] | None]):
         self,
         choices: tuple[FilterChoice, ...],
         selected: tuple[str, ...],
+        *,
+        title: str = "筛选缺陷状态",
+        description: str = "可选择多个状态；不选择表示查询全部状态。",
     ) -> None:
         super().__init__(id="defect-status-filter-screen")
         self._choices = choices
         self._selected = frozenset(selected)
+        self._title = title
+        self._description = description
 
     def compose(self) -> ComposeResult:
         with Vertical(id="defect-status-filter-dialog"):
-            yield Static("筛选缺陷状态", classes="modal-title")
+            yield Static(self._title, classes="modal-title")
             yield Static(
-                "可选择多个状态；不选择表示查询全部状态。",
+                self._description,
                 classes="modal-description",
             )
             yield SelectionList(id="defect-status-filter-list")
@@ -2257,13 +2386,23 @@ class WorkspaceDetailScreen(Screen[bool]):
         self._defect_status_choices: tuple[FilterChoice, ...] = ()
         self._defect_status_ids: tuple[str, ...] = ()
         self._defect_options_loaded = False
+        self._defect_assignee_available = False
+        self._defect_status_available = False
         self._filter_interactions_armed = False
+        self._filter_guard_generation = 0
         self._requirement_session_id: str | None = None
         self._requirement_candidates: tuple[RequirementChoice, ...] = ()
         self._requirement_result_generation = 0
         self._requirement_querying = False
+        self._requirement_options_loading = False
+        self._requirement_loaded_type_id = ""
         self._requirement_view_active = False
         self._requirement_options_loaded = False
+        self._requirement_type_available = False
+        self._requirement_assignee_available = False
+        self._requirement_status_available = False
+        self._requirement_status_choices: tuple[FilterChoice, ...] = ()
+        self._requirement_status_ids: tuple[str, ...] = ()
 
     def compose(self) -> ComposeResult:
         with Vertical(id="workspace-detail-body"):
@@ -2329,14 +2468,17 @@ class WorkspaceDetailScreen(Screen[bool]):
                         with Vertical(classes="workspace-requirement-filter-card"):
                             with Horizontal(classes="workspace-requirement-filter-row"):
                                 yield Static("负责人", classes="workspace-requirement-filter-label")
-                                yield Input(
-                                    placeholder="可选 ONES 成员 ID",
+                                yield Select(
+                                    [],
+                                    prompt="全部负责人",
                                     id="workspace-requirement-assignee",
+                                    disabled=True,
                                 )
                                 yield Static("状态", classes="workspace-requirement-filter-label")
-                                yield Input(
-                                    placeholder="可选状态 ID，逗号分隔",
-                                    id="workspace-requirement-status-ids",
+                                yield Button(
+                                    "状态 · 全部",
+                                    id="workspace-requirement-status-filter-button",
+                                    disabled=True,
                                 )
                             with Horizontal(classes="workspace-requirement-filter-row"):
                                 yield Static("需求类型", classes="workspace-requirement-filter-label")
@@ -2394,14 +2536,31 @@ class WorkspaceDetailScreen(Screen[bool]):
 
     async def on_mount(self) -> None:
         self._requirement_view_active = True
-        self.set_focus(None)
-        self.set_timer(
-            self.ENTRY_INPUT_GUARD_SECONDS,
-            self._arm_filter_interactions,
-        )
+        self._refresh_responsive_layout()
+        self._begin_filter_interaction_guard()
         await asyncio.gather(
             self._load_defect_options(),
             self._load_requirement_options(),
+        )
+
+    def on_screen_resume(self) -> None:
+        """Reflow and shield controls after returning from a child screen."""
+
+        self._refresh_responsive_layout()
+        self._begin_filter_interaction_guard()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._set_responsive_mode(event.size.width)
+
+    def _refresh_responsive_layout(self) -> None:
+        self._set_responsive_mode(self.app.size.width)
+        self.refresh(layout=True)
+
+    def _set_responsive_mode(self, width: int) -> None:
+        body = self.query_one("#workspace-detail-body")
+        body.remove_class("three", "two", "one")
+        body.add_class(
+            "three" if width >= 100 else "two" if width >= 70 else "one"
         )
 
     def on_unmount(self) -> None:
@@ -2415,8 +2574,48 @@ class WorkspaceDetailScreen(Screen[bool]):
         if session_id is not None and callable(discard_session):
             discard_session(session_id)
 
-    def _arm_filter_interactions(self) -> None:
+    def _begin_filter_interaction_guard(self) -> None:
+        self._filter_guard_generation += 1
+        generation = self._filter_guard_generation
+        self._filter_interactions_armed = False
+        self.set_focus(None)
+        self._sync_filter_interaction_state()
+        self.set_timer(
+            self.ENTRY_INPUT_GUARD_SECONDS,
+            lambda: self._arm_filter_interactions(generation),
+        )
+
+    def _arm_filter_interactions(self, generation: int | None = None) -> None:
+        if generation is not None and generation != self._filter_guard_generation:
+            return
         self._filter_interactions_armed = True
+        self._sync_filter_interaction_state()
+
+    def _sync_filter_interaction_state(self) -> None:
+        """Enable overlay controls only after metadata and entry shielding are ready."""
+
+        armed = self._filter_interactions_armed
+        self.query_one("#workspace-defect-assignee", Select).disabled = not (
+            armed and self._defect_assignee_available
+        )
+        self.query_one(
+            "#workspace-defect-status-filter-button", Button
+        ).disabled = not (armed and self._defect_status_available)
+        self.query_one("#workspace-query-defects", Button).disabled = not (
+            armed and self._defect_assignee_available
+        )
+        self.query_one("#workspace-requirement-type-id", Select).disabled = not (
+            armed and self._requirement_type_available
+        )
+        self.query_one("#workspace-requirement-assignee", Select).disabled = not (
+            armed and self._requirement_assignee_available
+        )
+        self.query_one(
+            "#workspace-requirement-status-filter-button", Button
+        ).disabled = not (armed and self._requirement_status_available)
+        self.query_one("#workspace-query-requirements", Button).disabled = not (
+            armed and self._requirement_type_available and not self._requirement_querying
+        )
 
     async def _load_defect_options(self) -> None:
         status = self.query_one("#workspace-defect-status", Static)
@@ -2432,6 +2631,8 @@ class WorkspaceDetailScreen(Screen[bool]):
         reload_button.disabled = True
         query_button.disabled = True
         status_button.disabled = True
+        self._defect_assignee_available = False
+        self._defect_status_available = False
         status.update("正在加载负责人和状态…")
         try:
             options = await self._supervisor.run_readonly(
@@ -2456,11 +2657,11 @@ class WorkspaceDetailScreen(Screen[bool]):
                     (item.id for item in options.assignees if item.selected),
                     options.assignees[0].id,
                 )
-            assignee.disabled = not options.assignees
-            status_button.disabled = not options.statuses
+            self._defect_assignee_available = bool(options.assignees)
+            self._defect_status_available = bool(options.statuses)
             self._update_defect_status_button()
-            query_button.disabled = not options.assignees
             self._defect_options_loaded = True
+            self._sync_filter_interaction_state()
             status.update(
                 "部分筛选项暂不可用：" + "、".join(options.unavailable)
                 if options.unavailable
@@ -2471,40 +2672,115 @@ class WorkspaceDetailScreen(Screen[bool]):
         finally:
             reload_button.disabled = False
 
-    async def _load_requirement_options(self) -> None:
+    async def _load_requirement_options(self, issue_type_id: str = "") -> None:
         status = self.query_one("#workspace-requirement-status", Static)
         select = self.query_one("#workspace-requirement-type-id", Select)
+        assignee = self.query_one("#workspace-requirement-assignee", Select)
+        status_button = self.query_one(
+            "#workspace-requirement-status-filter-button", Button
+        )
         query_button = self.query_one("#workspace-query-requirements", Button)
         source = getattr(self._controller, "load_requirement_filter_options", None)
         if not callable(source):
             status.update("当前控制器不支持需求类型查询")
             return
         select.disabled = True
+        assignee.disabled = True
+        status_button.disabled = True
         query_button.disabled = True
+        self._requirement_type_available = False
+        self._requirement_assignee_available = False
+        self._requirement_status_available = False
+        self._requirement_options_loading = True
         status.update("正在加载项目需求类型…")
         try:
             options = await self._supervisor.run_readonly(
                 "workspace-requirement-options",
                 source,
                 self.workspace.project_id,
+                issue_type_id,
             )
             select.set_options((item.name, item.id) for item in options.issue_types)
-            selected = next(
-                (item.id for item in options.issue_types if item.selected),
-                options.issue_types[0].id if options.issue_types else None,
+            selected = (
+                issue_type_id
+                if any(item.id == issue_type_id for item in options.issue_types)
+                else next(
+                    (item.id for item in options.issue_types if item.selected),
+                    options.issue_types[0].id if options.issue_types else None,
+                )
             )
             if selected is not None:
+                self._requirement_loaded_type_id = selected
                 select.value = selected
-            select.disabled = not options.issue_types
-            query_button.disabled = not options.issue_types
+            assignee.set_options((item.name, item.id) for item in options.assignees)
+            selected_assignee = next(
+                (item.id for item in options.assignees if item.selected),
+                None,
+            )
+            assignee.value = selected_assignee if selected_assignee else Select.BLANK
+            self._requirement_status_choices = options.statuses
+            self._requirement_status_ids = tuple(
+                item.id for item in options.statuses if item.selected
+            )
+            self._requirement_type_available = bool(options.issue_types)
+            self._requirement_assignee_available = bool(options.assignees)
+            self._requirement_status_available = bool(options.statuses)
             self._requirement_options_loaded = bool(options.issue_types)
+            self._update_requirement_status_button()
+            self._sync_filter_interaction_state()
             status.update(
                 "项目未配置可用的工作项类型"
                 if not options.issue_types
-                else "筛选项已就绪，点击查询查看需求列表"
+                else (
+                    "部分筛选项暂不可用：" + "、".join(options.unavailable)
+                    if options.unavailable
+                    else "筛选项已就绪，点击查询查看需求列表"
+                )
             )
         except Exception:
-            status.update("需求类型加载失败，请检查 ONES 连接后重试")
+            status.update("需求筛选项加载失败，请检查 ONES 连接后重试")
+        finally:
+            self._requirement_options_loading = False
+            self._sync_filter_interaction_state()
+
+    def _update_requirement_status_button(self) -> None:
+        button = self.query_one(
+            "#workspace-requirement-status-filter-button", Button
+        )
+        count = len(self._requirement_status_ids)
+        button.label = f"状态 · {count} 项" if count else "状态 · 全部"
+
+    @on(Select.Changed, "#workspace-requirement-type-id")
+    async def _requirement_type_changed(self, event: Select.Changed) -> None:
+        if (
+            self._requirement_options_loading
+            or type(event.value) is not str
+            or event.value == self._requirement_loaded_type_id
+        ):
+            return
+        await self._load_requirement_options(event.value)
+
+    @on(Button.Pressed, "#workspace-requirement-status-filter-button")
+    def _open_requirement_status_filter(self) -> None:
+        if not self._filter_interactions_armed:
+            return
+        self.app.push_screen(
+            DefectStatusFilterScreen(
+                self._requirement_status_choices,
+                self._requirement_status_ids,
+                title="筛选需求状态",
+                description="状态来自当前 ONES 项目与需求类型；不选择表示全部状态。",
+            ),
+            callback=self._requirement_status_filter_applied,
+        )
+
+    def _requirement_status_filter_applied(
+        self, selected: tuple[str, ...] | None
+    ) -> None:
+        if selected is None:
+            return
+        self._requirement_status_ids = selected
+        self._update_requirement_status_button()
 
     def _update_defect_status_button(self) -> None:
         button = self.query_one("#workspace-defect-status-filter-button", Button)
@@ -2642,19 +2918,17 @@ class WorkspaceDetailScreen(Screen[bool]):
 
     @on(Button.Pressed, "#workspace-query-requirements")
     async def _query_requirements(self) -> None:
-        if self._requirement_querying:
+        if not self._filter_interactions_armed or self._requirement_querying:
             return
         self._requirement_querying = True
         status = self.query_one("#workspace-requirement-status", Static)
         button = self.query_one("#workspace-query-requirements", Button)
         button.disabled = True
-        assignee = self.query_one("#workspace-requirement-assignee", Input).value.strip()
-        status_values = self.query_one(
-            "#workspace-requirement-status-ids", Input
+        assignee_value = self.query_one(
+            "#workspace-requirement-assignee", Select
         ).value
-        status_ids = tuple(
-            item.strip() for item in status_values.split(",") if item.strip()
-        )
+        assignee = assignee_value if type(assignee_value) is str else ""
+        status_ids = self._requirement_status_ids
         issue_type_value = self.query_one(
             "#workspace-requirement-type-id", Select
         ).value
@@ -2683,12 +2957,8 @@ class WorkspaceDetailScreen(Screen[bool]):
                 not self._requirement_options_loaded
                 or not issue_type_id
                 or not _SAFE_MAPPING_KEY.fullmatch(issue_type_id)
-                or (assignee and not _SAFE_MAPPING_KEY.fullmatch(assignee))
-                or any(not _SAFE_MAPPING_KEY.fullmatch(item) for item in status_ids)
             ):
-                status.update(
-                    "请填写有效的需求类型 ID；负责人和状态 ID 仅支持字母、数字、下划线及连字符"
-                )
+                status.update("需求筛选项已失效，请重新加载 ONES 选项")
                 return
             status.update("正在查询需求…")
             session_id, items = await self._supervisor.run_readonly(
@@ -2738,7 +3008,7 @@ class WorkspaceDetailScreen(Screen[bool]):
             status.update("需求查询失败，请检查 ONES 连接及筛选条件后重试")
         finally:
             self._requirement_querying = False
-            button.disabled = False
+            self._sync_filter_interaction_state()
 
     @on(Button.Pressed, ".workspace-requirement-start")
     def _start_workspace_requirement(self, event: Button.Pressed) -> None:
@@ -2891,7 +3161,7 @@ class WorkspaceDetailScreen(Screen[bool]):
             await self._render_defect_candidates()
             status.update("缺陷查询失败，请检查 ONES 连接后重试")
         finally:
-            button.disabled = False
+            self._sync_filter_interaction_state()
 
     @on(Button.Pressed)
     def _start_workspace_defect(self, event: Button.Pressed) -> None:
@@ -3078,6 +3348,11 @@ class DashboardScreen(Screen[None]):
                             id="action-retry-analysis",
                             variant="warning",
                         )
+                        yield Button(
+                            "记录 PR 审核证据",
+                            id="action-record-merge-readiness",
+                            variant="warning",
+                        )
             with Vertical(id="settings-page"):
                 with TabbedContent(initial="settings-ones", id="configuration-tabs"):
                     with TabPane("ONES 配置", id="settings-ones"):
@@ -3097,7 +3372,7 @@ class DashboardScreen(Screen[None]):
         self._mount_generation += 1
         self._lifecycle_active = True
         self._teardown_started = False
-        self._set_mode(self.size.width)
+        self._refresh_responsive_layout()
         self.query_one("#workspace-home").display = self._workspace_mode
         self.query_one("#workspace").display = not self._workspace_mode
         self.query_one("#settings-page").display = False
@@ -3106,11 +3381,23 @@ class DashboardScreen(Screen[None]):
             self.query_one("#configuration-tabs", TabbedContent).active = self._initial_settings_tab
             self.action_show_settings()
 
+    def on_screen_resume(self) -> None:
+        """Restore the layout mode after a child screen handled a resize."""
+
+        self._refresh_responsive_layout()
+
+    def _refresh_responsive_layout(self) -> None:
+        self._set_mode(self.app.size.width)
+        self.refresh(layout=True)
+
     def _set_analysis_actions(self, detail: RunDetail | None) -> None:
         self._selected_detail = detail
         accept = self.query_one("#action-accept-analysis", Button)
         regenerate = self.query_one("#action-regenerate-analysis", Button)
         retry = self.query_one("#action-retry-analysis", Button)
+        merge_readiness = self.query_one(
+            "#action-record-merge-readiness", Button
+        )
         resume = self.query_one("#action-resume", Button)
         approve = self.query_one("#action-approve", Button)
         workflow_running = bool(
@@ -3147,6 +3434,14 @@ class DashboardScreen(Screen[None]):
                 "coding agent result format repair failed",
             }
         )
+        merge_readiness.display = bool(
+            detail
+            and not workflow_running
+            and detail.summary.state is WorkflowState.WAITING_PR_VERIFICATION
+            and detail.draft_pr
+            and any(item.pr_url for item in detail.publication.repositories)
+            and not detail.merge_readiness_status
+        )
         resumable = bool(
             detail
             and not workflow_running
@@ -3176,7 +3471,14 @@ class DashboardScreen(Screen[None]):
             )
         self.query_one("#action-bar").display = bool(
             self.query_one("#workspace").display
-            and (resume.display or approve.display or accept.display or regenerate.display or retry.display)
+            and (
+                resume.display
+                or approve.display
+                or accept.display
+                or regenerate.display
+                or retry.display
+                or merge_readiness.display
+            )
         )
 
     def _set_active_navigation(self, active_id: str) -> None:
@@ -3564,6 +3866,24 @@ class DashboardScreen(Screen[None]):
         elif request is not None:
             self._show_action_notice(_ACTION_UNAVAILABLE)
 
+    @on(Button.Pressed, "#action-record-merge-readiness")
+    def _record_merge_readiness(self) -> None:
+        detail = self._selected_detail
+        allowed = bool(
+            detail
+            and detail.summary.state is WorkflowState.WAITING_PR_VERIFICATION
+            and detail.draft_pr
+            and any(item.pr_url for item in detail.publication.repositories)
+            and not detail.merge_readiness_status
+            and not self._supervisor.is_run_active(detail.summary.run_id)
+        )
+        if not allowed or detail is None:
+            self._show_action_notice(_ACTION_UNAVAILABLE)
+            return
+        self.app.push_screen(
+            MergeReadinessModal(detail), callback=self._merge_readiness_done
+        )
+
     async def action_revise(self) -> None:
         summary = self._selected_summary()
         if summary is not None and self._supervisor.is_run_active(summary.run_id):
@@ -3756,6 +4076,29 @@ class DashboardScreen(Screen[None]):
         self._submit_workflow_task(submission.run_id, "verify", lambda: self._controller.verify(
             submission.run_id, submission.task_key, submission.actor, submission.version,
             submission.evidence, submission.passed, submission.recipe_digest))
+
+    def _merge_readiness_done(
+        self, submission: MergeReadinessSubmission | None
+    ) -> None:
+        if submission is None:
+            return
+        if self._supervisor.is_run_active(submission.run_id):
+            self._show_action_notice("Workflow is already running; see AI activity")
+            return
+        self._set_analysis_actions(None)
+        self._show_action_notice(
+            "正在记录 PR 人工审核证据；不会自动合并或发布。"
+        )
+        self._submit_workflow_task(
+            submission.run_id,
+            "record-merge-readiness",
+            lambda: self._controller.record_merge_readiness(
+                submission.run_id,
+                submission.actor,
+                submission.evidence,
+                submission.version,
+            ),
+        )
 
     def _repository_mapping_selected(
         self, selection: RepositoryMappingSelection | None
@@ -4076,6 +4419,7 @@ __all__ = [
     "DefectStatusFilterScreen",
     "DefectWizardScreen",
     "HelpScreen",
+    "MergeReadinessModal",
     "NavigationPane",
     "PublicationResumeModal",
     "RepositoryMappingModal",

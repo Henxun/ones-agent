@@ -253,6 +253,23 @@ def publication(detail: RunDetail) -> DetailReport:
         parts.append(card("Draft PR · 人工验证待处理", Text(
             "待验证项随 PR 交付，不视为测试通过。仓库须配置必需检查 ones-agent/external-verification；"
             "本工具不自动合并、发布或修改分支保护。"), "yellow"))
+    if detail.merge_readiness_status:
+        readiness = fields(
+            ("状态", "人工审核与验证已记录"),
+            ("审核人", detail.merge_readiness_actor),
+            ("验证证据", detail.merge_readiness_evidence),
+        )
+        parts.append(card(
+            "合并前人工验证 · 已记录",
+            Group(
+                readiness,
+                Text(
+                    "此记录不会自动合并 PR、发布制品或把任务标记为完成。",
+                    style="yellow",
+                ),
+            ),
+            "green",
+        ))
     if record.error:
         parts.append(card("发布异常", literal(message(record.error)), "red"))
     if detail.review_report and detail.review_report.verification_only:

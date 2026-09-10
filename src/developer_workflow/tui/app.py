@@ -20,7 +20,7 @@ from ..setup_models import OnesProbePublicConfig
 from ..setup_controller import InlineValidationError
 from ..coding_agents import (
     CodingAgentInstallation,
-    probe_coding_agent,
+    CodingAgentProbeResult,
     discover_coding_agents,
 )
 from .models import RunActivity
@@ -72,6 +72,15 @@ class DeveloperWorkflowTuiApp(App[None]):
         Binding("/", "search", "Search"),
         Binding("f", "filter", "Filter"),
     ]
+
+    def _is_current_screen(self, candidate: object) -> bool:
+        """Check the active screen without assuming bootstrap mounted one yet."""
+
+        try:
+            stack = self.screen_stack
+        except Exception:
+            return False
+        return bool(stack) and stack[-1] is candidate
 
     def __init__(
         self,
@@ -455,7 +464,9 @@ class DeveloperWorkflowTuiApp(App[None]):
         dashboard = self._dashboard
         if dashboard is None:
             raise RuntimeError("TUI runtime is unavailable")
-        if not dashboard.is_attached:
+        # Bootstrap tests and embedders may provide a light-weight dashboard
+        # double without Textual's attachment property. Treat it as detached.
+        if not bool(getattr(dashboard, "is_attached", False)):
             await self.push_screen(dashboard)
         if self._ui_closed:
             raise _TransitionClosed
@@ -617,7 +628,7 @@ class DeveloperWorkflowTuiApp(App[None]):
                 dashboard.begin_teardown()
             except BaseException:
                 pass
-            if self.screen is dashboard:
+            if self._is_current_screen(dashboard):
                 try:
                     self.pop_screen()
                 except BaseException:
@@ -713,34 +724,33 @@ class DeveloperWorkflowTuiApp(App[None]):
     async def discover_inline_coding_agents(
         self,
     ) -> tuple[CodingAgentInstallation, ...]:
-        """Probe with the same Codex cache/preparer used by the active runtime."""
+        """Discover installed agents without starting any PATH executable."""
 
-        builder = self._runtime_bootstrapper
-        preparer = getattr(builder, "codex_runtime_preparer", None)
+        return await asyncio.to_thread(discover_coding_agents)
 
-        def probe(key, executable):
-            if key != "codex":
-                return probe_coding_agent(key, executable)
-            prepare = getattr(preparer, "prepare_verified", None)
-            if not callable(prepare):
-                # A direct/injected controller has no production runtime boundary;
-                # do not claim Codex launchability using a different cache root.
-                from ..coding_agents import CodingAgentProbeResult
+    async def verify_inline_coding_agent(
+        self, coding_agent: str
+    ) -> CodingAgentProbeResult:
+        """Run the selected provider's explicit bounded readiness probe."""
 
-                return CodingAgentProbeResult(
-                    False, diagnostic="当前运行时无法执行一致的 Codex 启动检查"
-                )
-            from ..codex_runner import resolve_codex_command
+        catalog = await self.discover_inline_coding_agents()
+        installation = next(
+            (item for item in catalog if item.key == coding_agent and item.usable),
+            None,
+        )
+        if installation is None or installation.executable is None:
+            raise RuntimeError("selected coding agent is unavailable")
+        from ..codex_runner import resolve_codex_command
+        from ..coding_agent_runtime import coding_agent_runtime_adapter
 
-            return probe_coding_agent(
-                key,
-                executable,
-                codex_command_resolver=lambda: resolve_codex_command(
-                    _prepare=prepare
-                ),
-            )
-
-        return await asyncio.to_thread(discover_coding_agents, probe=probe)
+        adapter = coding_agent_runtime_adapter(coding_agent)
+        result = await asyncio.to_thread(
+            adapter.probe_readiness,
+            installation.executable,
+            codex_preparer=self._runtime_bootstrapper.codex_runtime_preparer,
+            codex_command_resolver=resolve_codex_command,
+        )
+        return result
 
     async def save_inline_coding_agent(self, coding_agent: str) -> None:
         catalog = await self.discover_inline_coding_agents()
@@ -749,9 +759,13 @@ class DeveloperWorkflowTuiApp(App[None]):
             raise RuntimeError("selected coding agent is unavailable")
         if self.runtime_session is None:
             raise RuntimeError("editable runtime is unavailable")
+        readiness = await self.verify_inline_coding_agent(coding_agent)
+        if not readiness.launchable:
+            raise RuntimeError("selected coding agent failed readiness verification")
         await self._begin_reconfigure(
             inline_fields=coding_agent, inline_module="coding-agent"
         )
+        return readiness
 
     async def _begin_reconfigure(self, *, inline_fields=None, inline_credentials=None, inline_module="ones") -> None:
         """Close the stable runtime completely before constructing setup UI."""
@@ -978,15 +992,15 @@ class DeveloperWorkflowTuiApp(App[None]):
         self.exit()
 
     def action_help(self) -> None:
-        if self._dashboard is not None and self.screen is self._dashboard:
+        if self._dashboard is not None and self._is_current_screen(self._dashboard):
             self.push_screen(HelpScreen())
 
     def action_search(self) -> None:
-        if self._dashboard is not None and self.screen is self._dashboard:
+        if self._dashboard is not None and self._is_current_screen(self._dashboard):
             self._dashboard.action_search()
 
     def action_filter(self) -> None:
-        if self._dashboard is not None and self.screen is self._dashboard:
+        if self._dashboard is not None and self._is_current_screen(self._dashboard):
             self._dashboard.action_filter()
 
     async def on_unmount(self) -> None:

@@ -48,6 +48,19 @@ if TYPE_CHECKING:
 _DEFAULT_DEFECT_LIMIT = 1000
 _CURRENT_USER_TOKEN = "$currentUser"
 _OPEN_STATUS_CATEGORIES = frozenset({"open", "todo", "to_do", "doing", "in_progress", "pending"})
+_LEGACY_ISSUE_TYPE_COMPONENTS = {
+    "0": "custom",
+    "1": "requirement",
+    "2": "task",
+    "3": "defect",
+    "4": "sub_task",
+    "5": "sub_requirement",
+    "6": "ticket",
+    "7": "user_story",
+    "8": "sub_check_item",
+    "9": "release",
+    "10": "epic",
+}
 _CLOSED_STATUS_CATEGORIES = frozenset({"done", "completed", "cancelled", "discarded", "closed"})
 
 
@@ -134,20 +147,50 @@ class OnesGateway:
             or not isinstance(configs, list)
         ):
             raise OnesGatewayPayloadError("Malformed ONES project issue type metadata")
-        names: dict[str, str] = {}
+        definitions_by_id: dict[str, IssueTypeRef] = {}
         for item in definitions:
             if not isinstance(item, dict):
                 raise OnesGatewayPayloadError("Malformed ONES issue type definition")
-            identity = item.get("uuid")
+            identity = item.get("id", item.get("uuid"))
             name = item.get("name")
+            raw_component_type = item.get("type")
+            component_type = (
+                raw_component_type.strip().casefold()
+                if type(raw_component_type) is str
+                else ""
+            )
+            raw_detail_type = item.get("detailType", "")
+            if not component_type and (
+                isinstance(raw_detail_type, (str, int))
+                and not isinstance(raw_detail_type, bool)
+            ):
+                component_type = _LEGACY_ISSUE_TYPE_COMPONENTS.get(
+                    str(raw_detail_type).strip(), ""
+                )
             if (
                 type(identity) is not str
                 or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", identity) is None
                 or type(name) is not str
                 or not name.strip()
+                or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", component_type) is None
             ):
                 raise OnesGatewayPayloadError("Malformed ONES issue type definition")
-            names[identity] = cls._ensure_utf8(name.strip(), context="issue type name")
+            raw_built_in = item.get("buildIn", item.get("builtIn"))
+            if type(raw_built_in) is not bool:
+                raise OnesGatewayPayloadError("Malformed ONES issue type definition")
+            definition = IssueTypeRef(
+                id=identity,
+                name=cls._ensure_utf8(name.strip(), context="issue type name"),
+                built_in=raw_built_in,
+                detail_type=str(raw_detail_type).strip(),
+                component_type=component_type,
+            )
+            existing = definitions_by_id.get(identity)
+            if existing is not None and existing != definition:
+                raise OnesGatewayPayloadError(
+                    "Conflicting ONES issue type definitions"
+                )
+            definitions_by_id[identity] = definition
 
         result: list[IssueTypeRef] = []
         seen: set[str] = set()
@@ -158,7 +201,7 @@ class OnesGateway:
             identity = item.get("issue_type_uuid")
             if scope != project_id:
                 raise OnesGatewayPayloadError("Malformed ONES issue type config scope")
-            if type(identity) is not str or identity not in names:
+            if type(identity) is not str or identity not in definitions_by_id:
                 raise OnesGatewayPayloadError("Malformed ONES issue type config identity")
             if identity in seen:
                 continue
@@ -167,9 +210,18 @@ class OnesGateway:
             name = (
                 cls._ensure_utf8(configured_name.strip(), context="issue type config name")
                 if type(configured_name) is str and configured_name.strip()
-                else names[identity]
+                else definitions_by_id[identity].name
             )
-            result.append(IssueTypeRef(id=identity, name=name))
+            definition = definitions_by_id[identity]
+            result.append(
+                IssueTypeRef(
+                    id=identity,
+                    name=name,
+                    built_in=definition.built_in,
+                    detail_type=definition.detail_type,
+                    component_type=definition.component_type,
+                )
+            )
         return result
 
     def parse_wiki_url(self, url: str) -> WikiPageRef:
@@ -859,8 +911,31 @@ class OnesGateway:
         iteration = self._optional_mapping(detail, "sprint", context=f"requirement payload {requirement_id}")
         assignee = self._optional_mapping(detail, "assign", context=f"requirement payload {requirement_id}")
         status = self._require_nested_mapping(detail, "status", context=f"requirement payload {requirement_id}")
+        issue_type = self._optional_mapping(
+            detail, "issueType", context=f"requirement payload {requirement_id}"
+        )
         project_id = self._required_scalar(project.get("uuid"), context="requirement project uuid")
         status_id = self._required_scalar(status.get("uuid"), context="requirement status uuid")
+        issue_type_id = ""
+        issue_type_built_in = False
+        issue_type_detail_type = ""
+        if detail.get("issueType") is not None:
+            issue_type_id = self._required_scalar(
+                issue_type.get("uuid"), context="requirement issue type uuid"
+            )
+            raw_built_in = issue_type.get("builtIn", False)
+            raw_detail_type = issue_type.get("detailType", "")
+            if raw_detail_type is None:
+                raw_detail_type = ""
+            if type(raw_built_in) is not bool or (
+                not isinstance(raw_detail_type, (str, int))
+                or isinstance(raw_detail_type, bool)
+            ):
+                raise OnesGatewayPayloadError(
+                    "Malformed ONES requirement payload: issue type metadata"
+                )
+            issue_type_built_in = raw_built_in
+            issue_type_detail_type = str(raw_detail_type).strip()
         iteration_id = ""
         if detail.get("sprint") is not None:
             iteration_id = self._required_scalar(iteration.get("uuid"), context="requirement sprint uuid")
@@ -933,6 +1008,16 @@ class OnesGateway:
                 id=status_id,
                 name=self._optional_display_value(status, keys=("name",), context="requirement status name"),
                 category=self._optional_display_value(status, keys=("category",), context="requirement status category"),
+            ),
+            issue_type=IssueTypeRef(
+                id=issue_type_id,
+                name=self._optional_display_value(
+                    issue_type,
+                    keys=("name",),
+                    context="requirement issue type name",
+                ),
+                built_in=issue_type_built_in,
+                detail_type=issue_type_detail_type,
             ),
             description=description,
             wiki_refs=wiki_refs,

@@ -13,6 +13,7 @@ from .config import DeveloperWorkflowConfig, RepositoryMappingNotFound
 from .contracts import (
     CodingAgentProvenance,
     DefectAction,
+    MergeReadinessRecord,
     PublicationResult,
     WorkflowRun,
     WorkflowState,
@@ -110,12 +111,18 @@ class DeveloperWorkflowOrchestrator:
     defect_candidates: DefectCandidateService
     coding_agent: CodingAgentProvenance | None = None
 
-    def start_requirement(self, requirement_id: str) -> WorkflowRun:
+    def start_requirement(
+        self,
+        requirement_id: str,
+        *,
+        expected_scope: tuple[str, str, str] | None = None,
+    ) -> WorkflowRun:
         created = self.store.create(
             WorkflowRun.new(
                 WorkflowType.REQUIREMENT,
                 requirement_id,
                 coding_agent=self.coding_agent,
+                authorized_scope=expected_scope,
             )
         )
         with self.store.operation_lock(created.run_id, "orchestrate"):
@@ -460,6 +467,134 @@ class DeveloperWorkflowOrchestrator:
                 run.validated_update(approval=approval), expected_version=run.version
             )
             return self.publisher.publish(saved)
+
+    def record_merge_readiness(
+        self,
+        run_id: str,
+        actor: str,
+        evidence: str,
+        *,
+        expected_version: int | None = None,
+    ) -> WorkflowRun:
+        """Record post-Draft human verification without merging or completing."""
+
+        actor = _validated_text(actor, kind="verification actor", max_length=128)
+        evidence = _validated_text(
+            evidence, kind="merge readiness evidence", max_length=4096
+        )
+        public_evidence = verification.public_text(evidence, 4096)
+        with self.store.operation_lock(run_id, "orchestrate"):
+            run = self.store.load(run_id)
+            _require_expected_version(run, expected_version)
+            if run.state is not WorkflowState.WAITING_PR_VERIFICATION:
+                raise InvalidWorkflowAction(
+                    "merge readiness requires WAITING_PR_VERIFICATION"
+                )
+            existing = run.merge_readiness
+            if existing is not None:
+                if existing.actor == actor and existing.evidence == public_evidence:
+                    return run
+                raise InvalidWorkflowAction("merge readiness is already recorded")
+            try:
+                verification_digest, publication_digest = (
+                    pr_handoff.merge_readiness_binding(run)
+                )
+            except ValueError:
+                raise InvalidWorkflowAction(
+                    "merge readiness evidence is stale or incomplete"
+                ) from None
+            assert run.approval is not None and run.approval.fingerprint is not None
+            readiness = MergeReadinessRecord(
+                approval_fingerprint=run.approval.fingerprint,
+                verification_digest=verification_digest,
+                publication_digest=publication_digest,
+                actor=actor,
+                evidence=public_evidence,
+                evidence_sha256=hashlib.sha256(
+                    public_evidence.encode("utf-8")
+                ).hexdigest(),
+                occurred_at=datetime.now(timezone.utc),
+            )
+            history = run.merge_readiness_history
+            return self.store.save(
+                run.validated_update(
+                    merge_readiness=readiness,
+                    merge_readiness_history=(*history, readiness),
+                ),
+                run.version,
+            )
+
+    def get_merge_readiness(
+        self, run_id: str, *, expected_version: int
+    ) -> WorkflowRun:
+        """Read the version-bound post-Draft readiness state."""
+
+        run = self.store.load(run_id, read_only=True)
+        _require_expected_version(run, expected_version)
+        if run.state is not WorkflowState.WAITING_PR_VERIFICATION:
+            raise InvalidWorkflowAction(
+                "merge readiness requires WAITING_PR_VERIFICATION"
+            )
+        try:
+            pr_handoff.merge_readiness_binding(run)
+        except ValueError:
+            raise InvalidWorkflowAction(
+                "merge readiness evidence is stale or incomplete"
+            ) from None
+        return run
+
+    def clear_merge_readiness(
+        self,
+        run_id: str,
+        actor: str,
+        reason: str,
+        *,
+        expected_version: int,
+    ) -> WorkflowRun:
+        """Append an auditable revocation so verification can be recorded again."""
+
+        actor = _validated_text(actor, kind="verification actor", max_length=128)
+        reason = _validated_text(
+            reason, kind="merge readiness clear reason", max_length=4096
+        )
+        public_reason = verification.public_text(reason, 4096)
+        with self.store.operation_lock(run_id, "orchestrate"):
+            run = self.store.load(run_id)
+            _require_expected_version(run, expected_version)
+            if (
+                run.state is not WorkflowState.WAITING_PR_VERIFICATION
+                or run.merge_readiness is None
+            ):
+                raise InvalidWorkflowAction("active merge readiness is required")
+            try:
+                verification_digest, publication_digest = (
+                    pr_handoff.merge_readiness_binding(run)
+                )
+            except ValueError:
+                raise InvalidWorkflowAction(
+                    "merge readiness evidence is stale or incomplete"
+                ) from None
+            assert run.approval is not None and run.approval.fingerprint is not None
+            cleared = MergeReadinessRecord(
+                status="cleared",
+                approval_fingerprint=run.approval.fingerprint,
+                verification_digest=verification_digest,
+                publication_digest=publication_digest,
+                actor=actor,
+                evidence=public_reason,
+                evidence_sha256=hashlib.sha256(
+                    public_reason.encode("utf-8")
+                ).hexdigest(),
+                occurred_at=datetime.now(timezone.utc),
+            )
+            history = run.merge_readiness_history or (run.merge_readiness,)
+            return self.store.save(
+                run.validated_update(
+                    merge_readiness=None,
+                    merge_readiness_history=(*history, cleared),
+                ),
+                run.version,
+            )
 
     def cancel(
         self,

@@ -1151,6 +1151,31 @@ class MultiRepositoryPublicationResult(WorkflowModel):
         return self
 
 
+class MergeReadinessRecord(WorkflowModel):
+    """Human attestation that the approved Draft PR commit set is merge-ready.
+
+    This is deliberately separate from workflow completion: recording the
+    attestation neither changes the Draft state nor authorizes merge/release.
+    """
+
+    status: Literal["passed", "cleared"] = "passed"
+    approval_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    verification_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    publication_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    actor: str = Field(min_length=1, max_length=128)
+    evidence: str = Field(min_length=1, max_length=4096)
+    evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    occurred_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> MergeReadinessRecord:
+        if not self.actor.strip() or not self.evidence.strip():
+            raise ValueError("merge readiness attribution and evidence are required")
+        if hashlib.sha256(self.evidence.encode("utf-8")).hexdigest() != self.evidence_sha256:
+            raise ValueError("merge readiness evidence digest differs")
+        return self
+
+
 class RevisionRecord(WorkflowModel):
     feedback: str
     occurred_at: datetime
@@ -1194,6 +1219,7 @@ class WorkflowRun(WorkflowModel):
     work_item_id: str = ""
     project_id: str = ""
     iteration_id: str = ""
+    authorized_issue_type_id: str = ""
     assignee_id: str = ""
     candidate_id: str = ""
     requirement: RequirementRecord | None = None
@@ -1243,6 +1269,8 @@ class WorkflowRun(WorkflowModel):
     approval: ApprovalPackage | None = None
     publication: PublicationResult = Field(default_factory=PublicationResult)
     group_publication: MultiRepositoryPublicationResult | None = None
+    merge_readiness: MergeReadinessRecord | None = None
+    merge_readiness_history: tuple[MergeReadinessRecord, ...] = ()
     resume_state: WorkflowState | None = None
     blocked_reason: str = ""
     error: str = ""
@@ -1309,6 +1337,12 @@ class WorkflowRun(WorkflowModel):
             raise ValueError("a defect run must contain exactly its selected work item")
         if self.type is not WorkflowType.DEFECT and self.defect is not None:
             raise ValueError("a defect snapshot is only valid on a defect run")
+        if self.authorized_issue_type_id and (
+            self.type is not WorkflowType.REQUIREMENT or not self.project_id.strip()
+        ):
+            raise ValueError(
+                "an authorized issue type requires a project-scoped requirement run"
+            )
         return self
 
     @property
@@ -1330,18 +1364,39 @@ class WorkflowRun(WorkflowModel):
         work_item_id: str,
         *,
         coding_agent: CodingAgentProvenance | None = None,
+        authorized_scope: tuple[str, str, str] | None = None,
     ) -> WorkflowRun:
         _non_empty(work_item_id, "work_item_id")
+        normalized_workflow_type = WorkflowType(workflow_type)
+        if authorized_scope is not None:
+            if normalized_workflow_type is not WorkflowType.REQUIREMENT:
+                raise ValueError(
+                    "authorized requirement scope is only valid for requirement runs"
+                )
+            if (
+                type(authorized_scope) is not tuple
+                or len(authorized_scope) != 3
+                or any(type(value) is not str for value in authorized_scope)
+            ):
+                raise ValueError("authorized requirement scope is invalid")
+            _non_empty(authorized_scope[0], "authorized project_id")
+            _non_empty(authorized_scope[2], "authorized issue_type_id")
         now = utc_now()
+        project_id, iteration_id, authorized_issue_type_id = (
+            authorized_scope if authorized_scope is not None else ("", "", "")
+        )
         return cls(
             run_id=uuid.uuid4().hex,
-            type=workflow_type,
+            type=normalized_workflow_type,
             coding_agent=coding_agent,
             repository_model_version=2,
             state=WorkflowState.CREATED,
             version=0,
             history=(),
             work_item_id=work_item_id,
+            project_id=project_id,
+            iteration_id=iteration_id,
+            authorized_issue_type_id=authorized_issue_type_id,
             created_at=now,
             updated_at=now,
         )
@@ -1445,6 +1500,7 @@ __all__ = [
     "PublicationResult",
     "RepositoryPublicationResult",
     "MultiRepositoryPublicationResult",
+    "MergeReadinessRecord",
     "PreparedWorktree",
     "RepositoryMapping",
     "RepositoryGroupMapping",

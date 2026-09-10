@@ -9,11 +9,51 @@ import stat
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Literal
 
 
 CodingAgentKey = Literal["codex", "claude"]
+
+
+class CodingAgentLaunchMode(str, Enum):
+    """How a provider command crosses the local execution trust boundary."""
+
+    UNAVAILABLE = "unavailable"
+    NATIVE = "native"
+    ATTESTED_NATIVE = "attested_native"
+
+
+@dataclass(frozen=True, slots=True)
+class CodingAgentCapabilities:
+    """Provider-owned launch and output capabilities used before runner creation."""
+
+    launch_mode: CodingAgentLaunchMode = CodingAgentLaunchMode.UNAVAILABLE
+    version_pattern: str = ""
+    structured_output: bool = False
+    repository_groups: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.launch_mode) is not CodingAgentLaunchMode:
+            raise ValueError("coding agent launch mode is invalid")
+        if (
+            type(self.structured_output) is not bool
+            or type(self.repository_groups) is not bool
+        ):
+            raise ValueError("coding agent capability flags are invalid")
+        if self.launch_mode is CodingAgentLaunchMode.UNAVAILABLE:
+            if self.version_pattern or self.structured_output or self.repository_groups:
+                raise ValueError("unavailable coding agent capabilities are inconsistent")
+            return
+        try:
+            pattern = re.compile(self.version_pattern)
+        except (re.error, TypeError):
+            raise ValueError("coding agent version pattern is invalid") from None
+        if not self.version_pattern or "version" not in pattern.groupindex:
+            raise ValueError("coding agent version pattern is invalid")
+        if not self.structured_output:
+            raise ValueError("supported coding agent requires structured output")
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +64,12 @@ class CodingAgentDefinition:
     label: str
     command: str
     supported: bool
+    capabilities: CodingAgentCapabilities = CodingAgentCapabilities()
+
+    def __post_init__(self) -> None:
+        active = self.capabilities.launch_mode is not CodingAgentLaunchMode.UNAVAILABLE
+        if type(self.supported) is not bool or self.supported is not active:
+            raise ValueError("coding agent support and capabilities are inconsistent")
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +83,7 @@ class CodingAgentInstallation:
     detail: str = ""
     launchable: bool = False
     version: str = ""
+    readiness_checked: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,8 +96,30 @@ class CodingAgentProbeResult:
 
 
 CODING_AGENT_CATALOG = (
-    CodingAgentDefinition("codex", "Codex", "codex", True),
-    CodingAgentDefinition("claude", "Claude Code", "claude", True),
+    CodingAgentDefinition(
+        "codex",
+        "Codex",
+        "codex",
+        True,
+        CodingAgentCapabilities(
+            launch_mode=CodingAgentLaunchMode.ATTESTED_NATIVE,
+            version_pattern=r"codex-cli (?P<version>\d+\.\d+\.\d+)\Z",
+            structured_output=True,
+            repository_groups=True,
+        ),
+    ),
+    CodingAgentDefinition(
+        "claude",
+        "Claude Code",
+        "claude",
+        True,
+        CodingAgentCapabilities(
+            launch_mode=CodingAgentLaunchMode.NATIVE,
+            version_pattern=r"(?P<version>\d+\.\d+\.\d+) \(Claude Code\)\Z",
+            structured_output=True,
+            repository_groups=True,
+        ),
+    ),
     CodingAgentDefinition("gemini", "Gemini CLI", "gemini", False),
     CodingAgentDefinition("aider", "Aider", "aider", False),
     CodingAgentDefinition("cursor-agent", "Cursor Agent", "cursor-agent", False),
@@ -59,10 +128,6 @@ SUPPORTED_CODING_AGENT_KEYS = frozenset(
     item.key for item in CODING_AGENT_CATALOG if item.supported
 )
 
-_VERSION_PATTERNS = {
-    "codex": re.compile(r"codex-cli (?P<version>\d+\.\d+\.\d+)\Z"),
-    "claude": re.compile(r"(?P<version>\d+\.\d+\.\d+) \(Claude Code\)\Z"),
-}
 _PROBE_ENVIRONMENT = frozenset(
     {
         "APPDATA",
@@ -129,11 +194,13 @@ def _safe_probe_environment(source: dict[str, str]) -> dict[str, str]:
     }
 
 
-def _version_from_output(key: str, stdout: object, stderr: object) -> str:
+def _version_from_output(
+    definition: CodingAgentDefinition, stdout: object, stderr: object
+) -> str:
     """Accept exactly one provider-specific version line, fail closed otherwise."""
 
-    pattern = _VERSION_PATTERNS.get(key)
-    if pattern is None:
+    pattern_text = definition.capabilities.version_pattern
+    if not pattern_text:
         return ""
     values = [
         value.strip()
@@ -142,7 +209,7 @@ def _version_from_output(key: str, stdout: object, stderr: object) -> str:
     ]
     if len(values) != 1 or len(values[0]) > 128:
         return ""
-    match = pattern.fullmatch(values[0])
+    match = re.fullmatch(pattern_text, values[0])
     return match.group("version") if match is not None else ""
 
 
@@ -162,9 +229,18 @@ def probe_coding_agent(
     command = None
     argv: list[str]
     try:
-        if key not in SUPPORTED_CODING_AGENT_KEYS:
+        try:
+            definition = coding_agent_definition(key)
+        except ValueError:
             return CodingAgentProbeResult(False, diagnostic="Agent 尚未接入工作流")
-        if key == "codex":
+        capabilities = definition.capabilities
+        if (
+            not definition.supported
+            or not capabilities.structured_output
+            or capabilities.launch_mode is CodingAgentLaunchMode.UNAVAILABLE
+        ):
+            return CodingAgentProbeResult(False, diagnostic="Agent 尚未接入工作流")
+        if capabilities.launch_mode is CodingAgentLaunchMode.ATTESTED_NATIVE:
             from .codex_runner import resolve_codex_command
 
             command = (
@@ -173,13 +249,15 @@ def probe_coding_agent(
                 else codex_command_resolver()
             )
             argv = command.argv("--version")
-        else:
+        elif capabilities.launch_mode is CodingAgentLaunchMode.NATIVE:
             canonical = _canonical_executable(str(executable))
             if canonical is None:
                 return CodingAgentProbeResult(
                     False, diagnostic="命令不是受支持的原生可执行文件"
                 )
             argv = [str(canonical), "--version"]
+        else:
+            return CodingAgentProbeResult(False, diagnostic="Agent 启动方式不受支持")
         if run is None:
             from .codex_runner import _bounded_subprocess
 
@@ -193,7 +271,7 @@ def probe_coding_agent(
         )
         if completed.returncode != 0:
             return CodingAgentProbeResult(False, diagnostic="版本探测命令执行失败")
-        version = _version_from_output(key, completed.stdout, completed.stderr)
+        version = _version_from_output(definition, completed.stdout, completed.stderr)
         if not version:
             return CodingAgentProbeResult(False, diagnostic="未返回可识别的版本号")
         return CodingAgentProbeResult(True, version=version, diagnostic="已验证可启动")
@@ -210,7 +288,14 @@ def discover_coding_agents(
     which: Callable[[str], str | None] = shutil.which,
     probe: Callable[[str, Path], CodingAgentProbeResult] = probe_coding_agent,
 ) -> tuple[CodingAgentInstallation, ...]:
-    """Return a stable catalog with bounded launch and version readiness facts."""
+    """Return static PATH facts without starting any discovered executable.
+
+    ``probe`` remains accepted for compatibility with older injected callers.
+    Explicit readiness checks must call :func:`probe_coding_agent` from a
+    user-authorized action instead of piggybacking on list or refresh actions.
+    """
+
+    del probe
 
     found: list[CodingAgentInstallation] = []
     for definition in CODING_AGENT_CATALOG:
@@ -219,25 +304,23 @@ def discover_coding_agents(
         executable = _canonical_executable(raw) if raw else None
         installed = raw is not None
         display_path = executable or (Path(raw).resolve(strict=False) if raw else None)
-        can_probe = definition.supported and installed and (
-            executable is not None or key == "codex"
+        capabilities = definition.capabilities
+        statically_selectable = definition.supported and installed and (
+            executable is not None
+            or capabilities.launch_mode is CodingAgentLaunchMode.ATTESTED_NATIVE
         )
-        readiness = (
-            probe(key, display_path)
-            if can_probe and display_path is not None
-            else CodingAgentProbeResult(False)
-        )
-        usable = definition.supported and readiness.launchable
+        usable = statically_selectable
         if not installed:
             detail = "未安装或不在 PATH 中"
         elif not definition.supported:
             detail = "已检测，执行协议尚未接入"
-        elif executable is None and key != "codex":
+        elif (
+            executable is None
+            and capabilities.launch_mode is CodingAgentLaunchMode.NATIVE
+        ):
             detail = "已检测到命令包装脚本；当前仅支持原生可执行文件"
-        elif not readiness.launchable:
-            detail = readiness.diagnostic or "命令未通过启动检查"
         else:
-            detail = f"可启动 · 版本 {readiness.version}；认证将在任务启动时校验"
+            detail = "已安装；启动、版本及认证待任务运行时校验"
         found.append(
             CodingAgentInstallation(
                 key=key,
@@ -247,8 +330,8 @@ def discover_coding_agents(
                 usable=usable,
                 executable=display_path,
                 detail=detail,
-                launchable=readiness.launchable,
-                version=readiness.version,
+                launchable=False,
+                version="",
             )
         )
     return tuple(found)
@@ -256,7 +339,10 @@ def discover_coding_agents(
 
 def resolve_coding_agent_executable(key: str) -> Path:
     definition = coding_agent_definition(key)
-    if not definition.supported:
+    if (
+        not definition.supported
+        or definition.capabilities.launch_mode is not CodingAgentLaunchMode.NATIVE
+    ):
         raise RuntimeError("selected coding agent is unavailable")
     raw = shutil.which(definition.command)
     executable = _canonical_executable(raw) if raw else None
@@ -268,8 +354,10 @@ def resolve_coding_agent_executable(key: str) -> Path:
 __all__ = [
     "CODING_AGENT_CATALOG",
     "SUPPORTED_CODING_AGENT_KEYS",
+    "CodingAgentCapabilities",
     "CodingAgentDefinition",
     "CodingAgentInstallation",
+    "CodingAgentLaunchMode",
     "CodingAgentProbeResult",
     "CodingAgentKey",
     "coding_agent_definition",

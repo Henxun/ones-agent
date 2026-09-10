@@ -11,6 +11,7 @@ from textual.widgets import Button, Input, ListView, Select, Static, TabbedConte
 
 from src.developer_workflow.contracts import RepositoryMapping, WorkflowRun, WorkflowState, WorkflowType
 from src.developer_workflow.tui.models import (
+    DefectFilterOptions,
     FilterChoice,
     RequirementChoice,
     RequirementFilterOptions,
@@ -20,7 +21,15 @@ from src.developer_workflow.tui.models import (
     WorkspaceSummary,
 )
 from src.developer_workflow.tui.run_index import RunIndex
-from src.developer_workflow.tui.screens import WorkspaceDetailScreen, RequirementWizardScreen, WorkspaceListPane, WorkspaceRenameScreen
+from src.developer_workflow.tui.screens import (
+    DashboardScreen,
+    DefectStatusFilterScreen,
+    RequirementWizardScreen,
+    SettingsView,
+    WorkspaceDetailScreen,
+    WorkspaceListPane,
+    WorkspaceRenameScreen,
+)
 from dataclasses import replace
 
 
@@ -130,13 +139,26 @@ class Controller:
                     project_id=project,
                     iteration_id=iteration,
                     status_id="open",
+                    issue_type_id=issue_type_id,
                 ),
             ),
         )
 
-    def load_requirement_filter_options(self, project):
+    def load_requirement_filter_options(self, project, issue_type_id=""):
         return RequirementFilterOptions(
-            issue_types=(FilterChoice(id="story", name="Requirement", selected=True),)
+            issue_types=(FilterChoice(id="story", name="Requirement", selected=True),),
+            assignees=(FilterChoice(id="user-1", name="User One", selected=True),),
+            statuses=(
+                FilterChoice(id="open", name="Open", selected=True),
+                FilterChoice(id="ready", name="Ready", selected=True),
+            ),
+        )
+
+    def load_defect_filter_options(self, project):
+        return DefectFilterOptions(
+            iterations=(),
+            assignees=(FilterChoice(id="user", name="User", selected=True),),
+            statuses=(FilterChoice(id="open", name="Open", selected=True),),
         )
 
     def start_requirement(self, requirement_id, session_id=None):
@@ -156,6 +178,95 @@ class WorkspaceApp(App):
 
     async def on_mount(self):
         await self.push_screen(WorkspaceDetailScreen(self.controller, Supervisor(), WORKSPACE))
+
+
+@pytest.mark.asyncio
+async def test_workspace_entry_shield_keeps_overlay_controls_closed_until_armed():
+    app = WorkspaceApp()
+    async with app.run_test(size=(140, 42)) as pilot:
+        screen = app.screen
+        screen.ENTRY_INPUT_GUARD_SECONDS = 60
+        screen._begin_filter_interaction_guard()
+        await pilot.pause()
+
+        status_button = screen.query_one(
+            "#workspace-defect-status-filter-button", Button
+        )
+        requirement_type = screen.query_one("#workspace-requirement-type-id", Select)
+        assert screen._defect_options_loaded
+        assert screen._requirement_options_loaded
+        assert status_button.disabled
+        assert requirement_type.disabled
+
+        await pilot.click(status_button)
+        await pilot.click(requirement_type)
+        await pilot.pause()
+        assert app.screen is screen
+
+        screen._arm_filter_interactions(screen._filter_guard_generation)
+        assert not status_button.disabled
+        assert not requirement_type.disabled
+        status_button.press()
+        await pilot.pause()
+        assert isinstance(app.screen, DefectStatusFilterScreen)
+
+
+@pytest.mark.asyncio
+async def test_dashboard_reflows_to_latest_size_after_workspace_detail_closes():
+    class DashboardController(Controller):
+        def list_workspaces(self):
+            return (WORKSPACE,)
+
+        def list_runs(self, *_args):
+            return ()
+
+    controller = DashboardController()
+    dashboard = DashboardScreen(
+        controller, Supervisor(), SettingsView(3, "configured", True)
+    )
+
+    class DashboardApp(App):
+        CSS_PATH = "../src/developer_workflow/tui/tui.tcss"
+
+        async def on_mount(self):
+            await self.push_screen(dashboard)
+            await dashboard.refresh_workspaces()
+
+    async with DashboardApp().run_test(size=(80, 30)) as pilot:
+        assert dashboard.query_one("#dashboard").has_class("two")
+        dashboard._open_workspace_detail(WORKSPACE)
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, WorkspaceDetailScreen)
+
+        await pilot.resize_terminal(190, 42)
+        detail_body = pilot.app.screen.query_one("#workspace-detail-body")
+        assert detail_body.has_class("three")
+        assert sum(detail_body.has_class(name) for name in ("one", "two", "three")) == 1
+
+        pilot.app.screen.action_back()
+        await pilot.pause()
+        assert pilot.app.screen is dashboard
+        dashboard_body = dashboard.query_one("#dashboard")
+        assert dashboard_body.has_class("three")
+        assert sum(
+            dashboard_body.has_class(name) for name in ("one", "two", "three")
+        ) == 1
+
+
+def test_global_requirement_wizard_unmount_revokes_candidate_session():
+    controller = Controller()
+    screen = RequirementWizardScreen(
+        controller,
+        object(),  # type: ignore[arg-type]
+        candidate_session_id="global-requirement-session",
+    )
+
+    screen.on_unmount()
+
+    assert controller.discarded_requirement_sessions == [
+        "global-requirement-session"
+    ]
+    assert screen._requirement_session_id is None
 
 
 @pytest.mark.asyncio
@@ -258,8 +369,14 @@ async def test_workspace_tabs_footer_and_requirement_scope(size):
         assert not screen.query_one("#workspace-refresh-tasks", Button).disabled
         tabs.active = "workspace-requirements-tab"
         await pilot.pause()
-        screen.query_one("#workspace-requirement-assignee", Input).value = "user-1"
-        screen.query_one("#workspace-requirement-status-ids", Input).value = "open,ready"
+        assert isinstance(
+            screen.query_one("#workspace-requirement-assignee"), Select
+        )
+        assert isinstance(
+            screen.query_one("#workspace-requirement-status-filter-button"), Button
+        )
+        assert not screen.query("#workspace-requirement-status-ids")
+        screen.query_one("#workspace-requirement-assignee", Select).value = "user-1"
         screen.query_one("#workspace-requirement-type-id", Select).value = "story"
         screen.query_one("#workspace-query-requirements", Button).press()
         for _ in range(30):
@@ -304,7 +421,10 @@ async def test_failed_requirement_refresh_revokes_visible_candidate_session():
         screen.query_one("#workspace-modules", TabbedContent).active = (
             "workspace-requirements-tab"
         )
-        await pilot.pause()
+        for _ in range(30):
+            await pilot.pause(0.05)
+            if not screen.query_one("#workspace-query-requirements", Button).disabled:
+                break
         screen.query_one("#workspace-requirement-type-id", Select).value = "story"
         screen.query_one("#workspace-query-requirements", Button).press()
         for _ in range(30):
@@ -337,7 +457,10 @@ async def test_failed_requirement_refresh_revokes_visible_candidate_session():
 async def test_requirement_render_failure_revokes_new_candidate_session():
     app = WorkspaceApp()
     async with app.run_test(size=(140, 42)) as pilot:
-        await pilot.pause()
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if app.screen._filter_interactions_armed:
+                break
         screen = app.screen
         screen.query_one("#workspace-modules", TabbedContent).active = (
             "workspace-requirements-tab"
@@ -395,7 +518,10 @@ async def test_requirement_push_failure_revokes_session_and_restores_action():
         app.push_screen = fail_push
         action = screen.query_one(".workspace-requirement-start", Button)
         action.press()
-        await pilot.pause()
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if app.controller.discarded_requirement_sessions:
+                break
         app.push_screen = original_push_screen
 
         assert app.controller.discarded_requirement_sessions == [

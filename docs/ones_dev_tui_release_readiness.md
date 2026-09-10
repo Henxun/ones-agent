@@ -20,7 +20,8 @@
 ```powershell
 $tuiTests = Get-ChildItem .\tests -File -Filter 'test_developer_workflow_tui*.py' |
     ForEach-Object { $_.FullName }
-uv run pytest $tuiTests -q --basetemp="$PWD\.pytest-tmp"
+$pytestBase = Join-Path ([System.IO.Path]::GetTempPath()) ("ones-agent-pytest-" + [guid]::NewGuid().ToString("N"))
+uv run pytest $tuiTests -q --basetemp="$pytestBase"
 uv build --wheel --sdist --out-dir .tmp/dist-check
 uv run ones-dev --help
 ```

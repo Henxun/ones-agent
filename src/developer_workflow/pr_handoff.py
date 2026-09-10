@@ -19,6 +19,66 @@ def pending(run: WorkflowRun) -> tuple[VerificationTask, ...]:
     return tuple(task for task in run.verification_plan if task.status != "passed")
 
 
+def merge_readiness_binding(run: WorkflowRun) -> tuple[str, str]:
+    """Return immutable verification/publication digests for a delivered Draft.
+
+    The publication digest covers every changed repository's exact PR and
+    commit identity.  It intentionally does not imply that a platform merge or
+    a release artifact exists.
+    """
+
+    approval = run.approval
+    if (
+        run.state.value != "WAITING_PR_VERIFICATION"
+        or approval is None
+        or not approval.draft_pr
+        or not approval.fingerprint
+        or not approval.deferred_verification
+    ):
+        raise ValueError("merge readiness requires a delivered Draft PR handoff")
+    verification_digest = verification.digest(
+        tuple(task.model_dump(mode="json") for task in approval.deferred_verification)
+    )
+    if run.group_publication is not None:
+        publications = run.group_publication.repositories
+        repository_facts = tuple(
+            {
+                "repository_key": item.repository_key,
+                "approved_fingerprint": item.approved_fingerprint,
+                "commit_hash": item.commit_hash,
+                "pr_url": item.pr_url,
+            }
+            for item in publications
+        )
+        complete = bool(publications) and all(
+            item.approved_fingerprint == approval.fingerprint
+            and item.commit_hash
+            and item.pr_url
+            and not item.error
+            for item in publications
+        )
+    else:
+        publication = run.publication
+        repository_key = run.repository.key if run.repository is not None else ""
+        repository_facts = (
+            {
+                "repository_key": repository_key,
+                "approved_fingerprint": publication.approved_fingerprint,
+                "commit_hash": publication.commit_hash,
+                "pr_url": publication.pr_url,
+            },
+        )
+        complete = bool(repository_key) and (
+            publication.approved_fingerprint == approval.fingerprint
+            and bool(publication.commit_hash)
+            and bool(publication.pr_url)
+            and not publication.error
+        )
+    if not complete:
+        raise ValueError("merge readiness publication evidence is incomplete")
+    return verification_digest, verification.digest(repository_facts)
+
+
 def prepare(run: WorkflowRun, package: ApprovalPackage) -> ApprovalPackage:
     tasks = pending(run)
     if not tasks:

@@ -33,6 +33,13 @@ from ..contracts import (
     WorkflowType,
 )
 from ..pr_provider import PullRequestProviderError, parse_repository_identity
+from ..schedules import (
+    ScheduleRun,
+    ScheduleRunItem,
+    ScheduleRunItemStatus,
+    ScheduleRunStatus,
+    ScheduleRunTrigger,
+)
 from .defect_text import defect_display_text
 
 
@@ -74,6 +81,8 @@ class DefectFilterOptions:
 @dataclass(frozen=True, slots=True)
 class RequirementFilterOptions:
     issue_types: tuple[FilterChoice, ...]
+    assignees: tuple[FilterChoice, ...] = ()
+    statuses: tuple[FilterChoice, ...] = ()
     unavailable: tuple[str, ...] = ()
 
 
@@ -101,6 +110,84 @@ class WorkspaceSummary:
     @property
     def label(self) -> str:
         return self.display_name or self.key
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleRunView:
+    """Bounded, credential-free facts for one scheduled execution."""
+
+    run_id: str
+    schedule_id: str
+    schedule_version: int
+    schedule_name: str
+    action: DefectAction
+    trigger: ScheduleRunTrigger
+    status: ScheduleRunStatus
+    started_at: float
+    heartbeat_at: float
+    finished_at: float | None
+    discovered_count: int
+    skipped_count: int
+    started_count: int
+    failed_count: int
+    error_stage: str
+    interruption_reason: str
+
+    @classmethod
+    def from_run(cls, run: ScheduleRun) -> ScheduleRunView:
+        return cls(
+            run_id=safe_tui_text(run.id, maximum=32),
+            schedule_id=safe_tui_text(run.schedule_id, maximum=32),
+            schedule_version=run.schedule_version,
+            schedule_name=safe_tui_text(run.plan_snapshot.name, maximum=80),
+            action=run.plan_snapshot.action,
+            trigger=run.trigger,
+            status=run.status,
+            started_at=run.started_at,
+            heartbeat_at=run.heartbeat_at,
+            finished_at=run.finished_at,
+            discovered_count=run.discovered_count,
+            skipped_count=run.skipped_count,
+            started_count=run.started_count,
+            failed_count=run.failed_count,
+            error_stage=safe_tui_text(
+                run.error_stage, maximum=80, allow_empty=True
+            ),
+            interruption_reason=safe_tui_text(
+                run.error_message, maximum=2048, allow_empty=True
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleRunItemView:
+    """Display-safe outcome for one candidate in a scheduled execution."""
+
+    ordinal: int
+    defect_id: str
+    defect_name: str
+    action: DefectAction
+    status: ScheduleRunItemStatus
+    workflow_run_id: str
+    reason: str
+    updated_at: float
+
+    @classmethod
+    def from_item(cls, item: ScheduleRunItem) -> ScheduleRunItemView:
+        return cls(
+            ordinal=item.ordinal,
+            defect_id=safe_tui_text(item.defect_id, maximum=256),
+            defect_name=safe_tui_text(
+                item.defect_name, maximum=512, allow_empty=True
+            ),
+            action=item.action,
+            status=item.status,
+            workflow_run_id=safe_tui_text(
+                item.workflow_run_id, maximum=128, allow_empty=True
+            ),
+            reason=safe_tui_text(item.reason, maximum=2048, allow_empty=True),
+            updated_at=item.updated_at,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +395,10 @@ class RunDetail:
     coding_agent_label: str = ""
     coding_agent_key: str = ""
     coding_agent_version: str = ""
+    merge_readiness_status: str = ""
+    merge_readiness_actor: str = ""
+    merge_readiness_evidence: str = ""
+    merge_readiness_history: tuple[str, ...] = ()
 
     @classmethod
     def from_run(cls, run: WorkflowRun) -> RunDetail:
@@ -339,6 +430,7 @@ class RequirementChoice:
     project_id: str
     iteration_id: str
     status_id: str
+    issue_type_id: str
 
     @classmethod
     def from_requirement(cls, requirement: RequirementRecord) -> RequirementChoice:
@@ -349,6 +441,9 @@ class RequirementChoice:
             project_id=safe_tui_text(requirement.project.id, maximum=128),
             iteration_id=safe_tui_text(requirement.iteration.id, maximum=128, allow_empty=True),
             status_id=safe_tui_text(requirement.status.id, maximum=128),
+            issue_type_id=safe_tui_text(
+                requirement.issue_type.id, maximum=128, allow_empty=True
+            ),
         )
 
 
@@ -732,6 +827,27 @@ def run_detail_from_run(run: WorkflowRun) -> RunDetail:
             )
             if run.coding_agent is not None
             else ""
+        ),
+        merge_readiness_status=(
+            run.merge_readiness.status if run.merge_readiness is not None else ""
+        ),
+        merge_readiness_actor=(
+            safe_tui_text(run.merge_readiness.actor, maximum=128)
+            if run.merge_readiness is not None
+            else ""
+        ),
+        merge_readiness_evidence=(
+            safe_tui_text(run.merge_readiness.evidence, maximum=4096)
+            if run.merge_readiness is not None
+            else ""
+        ),
+        merge_readiness_history=tuple(
+            safe_tui_text(
+                f"{record.status} · {record.actor} · "
+                f"{record.occurred_at.isoformat()} · {record.evidence}",
+                maximum=4600,
+            )
+            for record in run.merge_readiness_history
         ),
         baseline_refresh_history=tuple(safe_tui_text(public_text(
             f"第 {index + 1} 轮 · " + {"preparing": "准备迁移", "migrated": "迁移完成，重新验证", "conflicts": "冲突交回修复", "failed": "迁移暂停"}[record.status]

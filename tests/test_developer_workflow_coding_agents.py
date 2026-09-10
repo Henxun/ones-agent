@@ -16,12 +16,16 @@ from src.developer_workflow.codex_runner import (
     GuardedCodingAgentRunner,
 )
 from src.developer_workflow.coding_agent_runner import (
+    CapabilityAwareCodingAgentRunner,
     CodingAgentOutputError,
     CodingAgentRunner,
 )
 from src.developer_workflow.coding_agents import (
     SUPPORTED_CODING_AGENT_KEYS,
+    CodingAgentCapabilities,
+    CodingAgentDefinition,
     CodingAgentInstallation,
+    CodingAgentLaunchMode,
     CodingAgentProbeResult,
     coding_agent_definition,
     discover_coding_agents,
@@ -42,19 +46,16 @@ def test_discovery_reports_supported_and_detected_only_agents(tmp_path: Path) ->
         path.write_bytes(b"test")
     paths = {"codex": str(codex), "claude": str(claude), "gemini": str(gemini)}
 
-    def probe(key: str, executable: Path) -> CodingAgentProbeResult:
-        assert executable.exists()
-        return CodingAgentProbeResult(
-            launchable=True, version="1.2.3", diagnostic="已验证可启动"
-        )
+    def probe(_key: str, _executable: Path) -> CodingAgentProbeResult:
+        raise AssertionError("static discovery must not execute coding agents")
 
     catalog = discover_coding_agents(paths.get, probe)
 
     by_key = {item.key: item for item in catalog}
     assert by_key["codex"].usable
     assert by_key["claude"].usable
-    assert by_key["claude"].launchable
-    assert by_key["claude"].version == "1.2.3"
+    assert not by_key["claude"].launchable
+    assert by_key["claude"].version == ""
     assert by_key["gemini"].installed and not by_key["gemini"].usable
     assert not by_key["aider"].installed
 
@@ -219,7 +220,7 @@ def test_probe_redacts_bounded_executor_failures(
     assert "private" not in result.diagnostic
 
 
-def test_discovery_keeps_installed_but_unlaunchable_agent_unselectable(
+def test_discovery_keeps_supported_native_agent_selectable_without_starting_it(
     tmp_path: Path,
 ) -> None:
     claude = tmp_path / "claude.exe"
@@ -227,16 +228,16 @@ def test_discovery_keeps_installed_but_unlaunchable_agent_unselectable(
 
     catalog = discover_coding_agents(
         lambda command: str(claude) if command == "claude" else None,
-        lambda _key, _path: CodingAgentProbeResult(
-            False, diagnostic="版本探测命令执行失败"
+        lambda _key, _path: (_ for _ in ()).throw(
+            AssertionError("discovery must not call the readiness probe")
         ),
     )
     item = next(item for item in catalog if item.key == "claude")
 
     assert item.installed
     assert not item.launchable
-    assert not item.usable
-    assert item.detail == "版本探测命令执行失败"
+    assert item.usable
+    assert item.version == ""
 
 
 def test_legacy_runtime_config_defaults_to_codex() -> None:
@@ -255,6 +256,12 @@ def test_runner_abstraction_is_provider_neutral_and_backwards_compatible(
     assert isinstance(claude, GuardedCodingAgentRunner)
     assert isinstance(codex, CodingAgentRunner)
     assert isinstance(claude, CodingAgentRunner)
+    assert isinstance(codex, CapabilityAwareCodingAgentRunner)
+    assert isinstance(claude, CapabilityAwareCodingAgentRunner)
+    assert codex.provider_key == "codex"
+    assert claude.provider_key == "claude"
+    assert codex.capabilities is coding_agent_definition("codex").capabilities
+    assert claude.capabilities is coding_agent_definition("claude").capabilities
     assert not isinstance(claude, CodexRunner)
     assert CodexOutputError is CodingAgentOutputError
 
@@ -265,6 +272,60 @@ def test_supported_agent_registry_owns_selection_keys() -> None:
     validate_coding_agent_provider_keys({"codex": object(), "claude": object()})
     with pytest.raises(ValueError, match="incomplete"):
         validate_coding_agent_provider_keys({"codex": object()})
+
+
+def test_supported_agent_definitions_own_runtime_capabilities() -> None:
+    codex = coding_agent_definition("codex")
+    claude = coding_agent_definition("claude")
+
+    assert codex.capabilities.launch_mode is CodingAgentLaunchMode.ATTESTED_NATIVE
+    assert claude.capabilities.launch_mode is CodingAgentLaunchMode.NATIVE
+    assert codex.capabilities.structured_output
+    assert claude.capabilities.repository_groups
+    assert "Codex" not in codex.capabilities.version_pattern
+    assert "Claude Code" in claude.capabilities.version_pattern
+
+
+def test_probe_uses_definition_capabilities_instead_of_provider_name(
+    tmp_path: Path, monkeypatch
+) -> None:
+    executable = tmp_path / "example.exe"
+    executable.write_bytes(b"test")
+    definition = CodingAgentDefinition(
+        "example",
+        "Example Agent",
+        "example",
+        True,
+        CodingAgentCapabilities(
+            launch_mode=CodingAgentLaunchMode.NATIVE,
+            version_pattern=r"example-agent (?P<version>\d+\.\d+\.\d+)\Z",
+            structured_output=True,
+            repository_groups=True,
+        ),
+    )
+    monkeypatch.setattr(
+        "src.developer_workflow.coding_agents.CODING_AGENT_CATALOG",
+        (definition,),
+    )
+    completed = subprocess.CompletedProcess([], 0, "example-agent 3.2.1\n", "")
+
+    result = probe_coding_agent(
+        "example", executable, run=lambda *_args, **_kwargs: completed
+    )
+
+    assert result.launchable
+    assert result.version == "3.2.1"
+
+
+def test_capability_contract_rejects_inconsistent_or_unsafe_definitions() -> None:
+    with pytest.raises(ValueError, match="version pattern"):
+        CodingAgentCapabilities(
+            launch_mode=CodingAgentLaunchMode.NATIVE,
+            version_pattern=r"example \d+\.\d+\.\d+",
+            structured_output=True,
+        )
+    with pytest.raises(ValueError, match="inconsistent"):
+        CodingAgentDefinition("example", "Example", "example", True)
 
 
 async def test_inline_agent_selection_preserves_existing_configuration(tmp_path: Path) -> None:
@@ -346,6 +407,9 @@ async def test_configuration_agent_tab_lists_and_saves_available_agent(monkeypat
     app = DeveloperWorkflowTuiApp(ConfigurationController(), 3)
     app.discover_inline_coding_agents = AsyncMock(return_value=catalog)
     app.read_inline_coding_agent = AsyncMock(return_value="codex")
+    app.verify_inline_coding_agent = AsyncMock(
+        return_value=CodingAgentProbeResult(True, "2.7.1", "已验证可启动")
+    )
     app.save_inline_coding_agent = AsyncMock()
     async with app.run_test(size=(120, 40)) as pilot:
         dashboard = app.screen
@@ -363,13 +427,21 @@ async def test_configuration_agent_tab_lists_and_saves_available_agent(monkeypat
             value for _, value in select._options if isinstance(value, str)
         ) == ("codex", "claude")
         select.value = "claude"
+        pane.verify()
+        await pilot.pause()
+        app.verify_inline_coding_agent.assert_awaited_once_with("claude")
+        claude = next(item for item in pane._catalog if item.key == "claude")
+        assert claude.readiness_checked
+        assert claude.launchable
         pane.save()
         await pilot.pause()
         app.save_inline_coding_agent.assert_awaited_once_with("claude")
         assert not pane.query_one("#coding-agent-save", Button).disabled
 
 
-async def test_app_discovery_uses_active_runtime_codex_preparer(monkeypatch) -> None:
+async def test_app_only_uses_active_runtime_codex_preparer_for_explicit_probe(
+    monkeypatch,
+) -> None:
     app = DeveloperWorkflowTuiApp(ConfigurationController(), 3)
     prepared = object()
 
@@ -399,16 +471,14 @@ async def test_app_discovery_uses_active_runtime_codex_preparer(monkeypatch) -> 
         return CodingAgentProbeResult(True, "1.2.3", "已验证可启动")
 
     monkeypatch.setattr(
-        "src.developer_workflow.tui.app.probe_coding_agent", fake_probe
+        "src.developer_workflow.coding_agent_runtime.probe_coding_agent", fake_probe
     )
 
-    def fake_discovery(*, probe):
-        result = probe("codex", Path("codex.cmd"))
+    def fake_discovery():
         return (
             CodingAgentInstallation(
-                "codex", "Codex", True, True, result.launchable,
-                Path("codex.cmd"), result.diagnostic, result.launchable,
-                result.version,
+                "codex", "Codex", True, True, True,
+                Path("codex.cmd"), "已安装；尚未验证", False, "",
             ),
         )
 
@@ -417,6 +487,9 @@ async def test_app_discovery_uses_active_runtime_codex_preparer(monkeypatch) -> 
     )
 
     catalog = await app.discover_inline_coding_agents()
+    result = await app.verify_inline_coding_agent("codex")
 
-    assert catalog[0].launchable
-    assert catalog[0].version == "1.2.3"
+    assert not catalog[0].launchable
+    assert catalog[0].version == ""
+    assert result.launchable
+    assert result.version == "1.2.3"

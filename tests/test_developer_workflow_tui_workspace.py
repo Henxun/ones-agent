@@ -28,7 +28,7 @@ def _repository(
         iteration_id="iteration",
         repo_url=f"https://git.example.test/{key}.git",
         repo_name=key,
-        source_path=Path("/workspace") / key,
+        source_path=Path.cwd().resolve() / "workspace" / key,
         role=role,
         depends_on=depends_on,
     )
@@ -602,7 +602,13 @@ async def test_dashboard_creates_multi_repository_workspace_and_opens_detail() -
             pilot.app.screen.query_one("#defect-status-filter-list").selected
         ) == ("open",)
         pilot.app.screen.query_one("#defect-status-filter-apply").press()
-        await pilot.pause()
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if (
+                isinstance(pilot.app.screen, WorkspaceDetailScreen)
+                and pilot.app.screen._filter_interactions_armed
+            ):
+                break
         assert isinstance(pilot.app.screen, WorkspaceDetailScreen)
         assert pilot.app.screen.region.width == 190
         pilot.app.screen.query_one("#workspace-query-defects").press()

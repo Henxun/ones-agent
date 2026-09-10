@@ -305,6 +305,14 @@ class Orchestrator:
         self.calls.append(("approve", run_id, actor))
         return self.show(run_id)
 
+    def record_merge_readiness(
+        self, run_id: str, actor: str, evidence: str, *, expected_version: int
+    ) -> WorkflowRun:
+        self.calls.append(
+            ("record-merge-readiness", run_id, actor, evidence, expected_version)
+        )
+        return self.show(run_id)
+
     def cancel(self, run_id: str, actor: str) -> WorkflowRun:
         self.calls.append(("cancel", run_id, actor))
         return self.show(run_id).validated_update(state=WorkflowState.CANCELLED)
@@ -331,7 +339,17 @@ def test_module_is_importable_and_help_lists_exact_commands() -> None:
     output = Terminal(tty=False)
     code = main(["--help"], stdout=output, stderr=Terminal(tty=False))
     assert code == 0
-    for command in ("requirement", "defect", "defects", "show", "resume", "revise", "approve", "cancel"):
+    for command in (
+        "requirement",
+        "defect",
+        "defects",
+        "show",
+        "resume",
+        "revise",
+        "approve",
+        "record-merge-readiness",
+        "cancel",
+    ):
         assert command in output.getvalue()
 
 
@@ -1684,6 +1702,10 @@ def test_defect_tty_selection_is_the_prompted_number_even_if_select_is_present(
         (["resume", "RUN"], ("resume", "RUN")),
         (["revise", "RUN", "--feedback", "fix", "--scope", "implementation"], ("revise", "RUN", "fix", "implementation")),
         (["approve", "RUN", "--actor", "alice"], ("approve", "RUN", "alice")),
+        (
+            ["record-merge-readiness", "RUN", "--actor", "alice", "--evidence", "hardware passed", "--version", "4"],
+            ("record-merge-readiness", "RUN", "alice", "hardware passed", 4),
+        ),
         (["cancel", "RUN", "--actor", "alice"], ("cancel", "RUN", "alice")),
     ],
 )

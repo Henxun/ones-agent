@@ -19,17 +19,11 @@ from config.settings import OnesSettings
 from src.services.ones_gateway import OnesGateway
 
 from .approval_rebuilder import WorkflowApprovalRebuilder
-from .codex_runner import (
-    CodexRunner,
-    GuardedCodingAgentRunner,
-    resolve_codex_command,
-    validate_codex_auth_source,
-)
+from .codex_runner import resolve_codex_command, validate_codex_auth_source
 from .codex_runtime import CodexRuntimePreparer
-from .claude_runner import ClaudeRunner, safe_claude_environment
+from .coding_agent_runtime import coding_agent_runtime_adapter
 from .coding_agents import (
     coding_agent_definition,
-    validate_coding_agent_provider_keys,
 )
 from .coding_agent_runner import CodingAgentRunner
 from .config import (
@@ -152,15 +146,6 @@ _GIT_SECRET_ENV = {
     SecretKind.SSH_ASKPASS: "SSH_ASKPASS",
     SecretKind.SSH_AUTH_SOCK: "SSH_AUTH_SOCK",
 }
-_CODEX_BASE_ENV = frozenset(
-    {
-        "COMSPEC", "LANG", "LC_ALL", "NO_COLOR", "PATH", "PATHEXT",
-        "SYSTEMROOT", "TEMP", "TERM", "TMP", "TMPDIR", "WINDIR",
-        "SSL_CERT_DIR", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-        "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "OPENAI_API_VERSION",
-        "OPENAI_BASE_URL", "OPENAI_ORGANIZATION", "OPENAI_ORG_ID", "OPENAI_PROJECT",
-    }
-)
 _PREFLIGHT_ENV = frozenset(
     {
         "COMSPEC", "LANG", "LC_ALL", "NO_COLOR", "PATH", "PATHEXT",
@@ -464,16 +449,10 @@ class RuntimeBootstrapper:
                 or workflow.sandbox_permission_profile_source is not persisted_source
             ):
                 raise ValueError
-            codex_kinds = {
-                SecretKind.CODEX_API_KEY,
-                SecretKind.CODEX_AUTH_TOKEN,
-            } & set(active.credential_kinds)
-            if public.coding_agent == "codex":
-                if public.codex_auth_mode == "credential":
-                    if len(codex_kinds) != 1 or public.codex_home is not None:
-                        raise ValueError
-                elif public.codex_auth_mode != "file" or codex_kinds:
-                    raise ValueError
+            agent_runtime = coding_agent_runtime_adapter(public.coding_agent)
+            agent_runtime.validate_configuration(
+                public, frozenset(active.credential_kinds)
+            )
             validated_secrets = {
                 kind: _validate_runtime_secret(value)
                 for kind, value in secrets.values.items()
@@ -509,8 +488,7 @@ class RuntimeBootstrapper:
                 "GIT_COMMITTER_EMAIL": public.git_author_email,
             }
             validate_git_identity_environment(identity_values)
-            if public.coding_agent == "codex":
-                validate_codex_auth_source(agent_environment)
+            agent_runtime.validate_environment(agent_environment)
             publishing_enabled = bool(provider_token) and self.adapters.pr_factory is None
             for mapping in (
                 *workflow.repositories,
@@ -560,35 +538,6 @@ class RuntimeBootstrapper:
                 else self.adapters.gateway_factory(settings)
             )
             environment_provider = lambda: dict(agent_environment)
-            def build_claude() -> GuardedCodingAgentRunner:
-                return ClaudeRunner(
-                    run_root,
-                    repository,
-                    environment_provider=environment_provider,
-                    sandbox_mode_override="danger-full-access",
-                )
-
-            def build_codex() -> object:
-                return (
-                    CodexRunner(
-                        run_root,
-                        repository,
-                        command_resolver=lambda: resolve_codex_command(
-                            _prepare=self.codex_runtime_preparer.prepare_verified
-                        ),
-                        environment_provider=environment_provider,
-                    )
-                    if self.adapters.codex_factory is None
-                    else self.adapters.codex_factory(
-                        run_root, repository, environment_provider
-                    )
-                )
-
-            agent_builders = {
-                "codex": build_codex,
-                "claude": build_claude,
-            }
-            validate_coding_agent_provider_keys(agent_builders)
             if self.adapters.coding_agent_factory is not None:
                 coding_agent_backend = self.adapters.coding_agent_factory(
                     public.coding_agent,
@@ -597,10 +546,14 @@ class RuntimeBootstrapper:
                     environment_provider,
                 )
             else:
-                try:
-                    coding_agent_backend = agent_builders[public.coding_agent]()
-                except KeyError:
-                    raise ValueError("unsupported coding agent") from None
+                coding_agent_backend = agent_runtime.build_runner(
+                    run_root,
+                    repository,
+                    environment_provider,
+                    codex_preparer=self.codex_runtime_preparer,
+                    codex_command_resolver=resolve_codex_command,
+                    legacy_codex_factory=self.adapters.codex_factory,
+                )
             if self.adapters.coding_agent_factory is not None and not isinstance(
                 coding_agent_backend, CodingAgentRunner
             ):
@@ -716,34 +669,9 @@ class RuntimeBootstrapper:
     def _coding_agent_environment(
         self, public: RuntimePublicConfig, secrets: RuntimeSecrets
     ) -> dict[str, str]:
-        ambient = self.ambient_environment()
-        if public.coding_agent == "claude":
-            return safe_claude_environment(ambient)
-        environment = {
-            key: value
-            for key, value in ambient.items()
-            if type(key) is str
-            and type(value) is str
-            and key.upper() in _CODEX_BASE_ENV
-        }
-        if public.codex_auth_mode == "credential":
-            api_key = secrets.values.get(SecretKind.CODEX_API_KEY, "")
-            auth_token = secrets.values.get(SecretKind.CODEX_AUTH_TOKEN, "")
-            if bool(api_key) == bool(auth_token):
-                raise ValueError
-            environment[
-                "CODEX_API_KEY" if api_key else "CODEX_AUTH_TOKEN"
-            ] = api_key or auth_token
-        elif public.codex_home is not None:
-            environment["CODEX_HOME"] = str(public.codex_home)
-        else:
-            # Discover the normal local CLI profile once, validate it through
-            # the same boundary, then pass only its canonical home to workers.
-            discovered_home = validate_codex_auth_source(ambient)
-            if discovered_home is None:
-                raise ValueError
-            environment["CODEX_HOME"] = str(discovered_home)
-        return environment
+        return coding_agent_runtime_adapter(public.coding_agent).build_environment(
+            public, secrets, self.ambient_environment()
+        )
 
 
 __all__ = [

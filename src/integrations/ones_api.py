@@ -1196,7 +1196,10 @@ class OnesAsyncClient:
 
     async def fetch_issue_types(self) -> list[dict[str, Any]]:
         data = await self._graphql(GQL_FETCH_ISSUE_TYPES, {}, t="issueTypes")
-        return list(data.get("issueTypes", [])) if isinstance(data, dict) else []
+        rows = data.get("issueTypes", []) if isinstance(data, dict) else []
+        if not isinstance(rows, list):
+            raise OnesPayloadError("ONES issue type response is malformed")
+        return rows
 
     async def fetch_issue_type_configs(self, project_id: str) -> list[dict[str, Any]]:
         project_id = (project_id or "").strip()

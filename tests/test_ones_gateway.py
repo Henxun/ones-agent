@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import unittest
 from unittest.mock import patch
-
 import httpx
 import requests
 from structlog.testing import capture_logs
 
 from config.settings import OnesSettings
 from src.contracts import IdentityRef, WorkflowStatusRef
-from src.integrations.ones import OnesPaginationError as SyncOnesPaginationError
-from src.integrations.ones_api import OnesPaginationError as AsyncOnesPaginationError
+from src.integrations.ones import (
+    GQL_FETCH_ISSUE_TYPES,
+    OnesClient,
+    OnesPaginationError as SyncOnesPaginationError,
+)
+from src.integrations.ones_api import (
+    OnesAsyncClient,
+    OnesPaginationError as AsyncOnesPaginationError,
+)
 from src.services.ones_gateway import (
     OnesGateway,
     OnesGatewayAuthError,
@@ -30,6 +36,34 @@ class FakeHTTPStatusError(Exception):
     def __init__(self, status_code: int):
         super().__init__(f"status {status_code}")
         self.response = FakeResponse(status_code)
+
+
+class TestIssueTypeWebApiContract(unittest.IsolatedAsyncioTestCase):
+    def test_sync_issue_types_use_the_existing_web_graphql_query(self):
+        client = object.__new__(OnesClient)
+        client._graphql = unittest.mock.MagicMock(
+            return_value={"issueTypes": [{"uuid": "requirement-type"}]}
+        )
+
+        rows = client.fetch_issue_types()
+
+        self.assertEqual(rows, [{"uuid": "requirement-type"}])
+        client._graphql.assert_called_once_with(
+            GQL_FETCH_ISSUE_TYPES, {}, t="issueTypes"
+        )
+
+    async def test_async_issue_types_use_the_existing_web_graphql_query(self):
+        client = object.__new__(OnesAsyncClient)
+        client._graphql = unittest.mock.AsyncMock(
+            return_value={"issueTypes": [{"uuid": "requirement-type"}]}
+        )
+
+        rows = await client.fetch_issue_types()
+
+        self.assertEqual(rows, [{"uuid": "requirement-type"}])
+        client._graphql.assert_awaited_once_with(
+            GQL_FETCH_ISSUE_TYPES, {}, t="issueTypes"
+        )
 
 
 class FakeAsyncClient:
@@ -53,8 +87,18 @@ class FakeAsyncClient:
 
     async def fetch_issue_types(self) -> list[dict]:
         return [
-            {"uuid": "requirement-type", "name": "需求"},
-            {"uuid": "task-type", "name": "任务"},
+            {
+                "id": "requirement-type",
+                "name": "需求",
+                "buildIn": True,
+                "type": " Requirement ",
+            },
+            {
+                "id": "task-type",
+                "name": "任务",
+                "buildIn": True,
+                "type": "task",
+            },
         ]
 
     async def fetch_issue_type_configs(self, project_id: str) -> list[dict]:
@@ -90,6 +134,18 @@ class FakeSyncClient:
     def fetch_issue_detail(self, issue_id: str) -> dict:
         self.detail_calls.append(issue_id)
         return {"uuid": issue_id, "name": "fallback"}
+
+    def fetch_issue_types(self) -> list[dict]:
+        return [
+            {"id": "requirement-type", "name": "需求", "buildIn": True, "type": "requirement"},
+            {"id": "task-type", "name": "任务", "buildIn": True, "type": "task"},
+        ]
+
+    def fetch_issue_type_configs(self, project_id: str) -> list[dict]:
+        return [
+            {"project_uuid": project_id, "issue_type_uuid": "requirement-type"},
+            {"project_uuid": project_id, "issue_type_uuid": "task-type"},
+        ]
 
 
 class RaisingAsyncClient(FakeAsyncClient):
@@ -129,6 +185,50 @@ class TestOnesGatewayAsync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [(item.id, item.name) for item in issue_types],
             [("requirement-type", "产品需求"), ("task-type", "任务")],
+        )
+        self.assertEqual(
+            [(item.built_in, item.detail_type, item.component_type) for item in issue_types],
+            [(True, "", "requirement"), (True, "", "task")],
+        )
+
+    async def test_project_issue_types_reject_missing_authoritative_component_type(self):
+        client = FakeAsyncClient()
+        client.fetch_issue_types = unittest.mock.AsyncMock(
+            return_value=[{"id": "requirement-type", "name": "需求", "buildIn": True}]
+        )
+        gateway = OnesGateway(async_client=client)
+
+        with self.assertRaises(OnesGatewayPayloadError):
+            await gateway.list_project_issue_types("project-1")
+
+    async def test_project_issue_types_accept_legacy_numeric_detail_type(self):
+        client = FakeAsyncClient()
+        client.fetch_issue_types = unittest.mock.AsyncMock(
+            return_value=[
+                {
+                    "uuid": "requirement-type",
+                    "name": "需求",
+                    "builtIn": True,
+                    "detailType": 1,
+                },
+                {
+                    "uuid": "task-type",
+                    "name": "任务",
+                    "builtIn": True,
+                    "detailType": 2,
+                },
+            ]
+        )
+        gateway = OnesGateway(async_client=client)
+
+        issue_types = await gateway.list_project_issue_types("project-1")
+
+        self.assertEqual(
+            [(item.id, item.detail_type, item.component_type) for item in issue_types],
+            [
+                ("requirement-type", "1", "requirement"),
+                ("task-type", "2", "task"),
+            ],
         )
 
     async def test_list_defects_maps_async_pagination_failure_to_safe_payload_error(self):
@@ -626,6 +726,16 @@ class TestOnesGatewayAsync(unittest.IsolatedAsyncioTestCase):
 
 
 class TestOnesGatewaySync(unittest.TestCase):
+    def test_list_project_issue_types_sync_matches_authoritative_component_types(self):
+        issue_types = OnesGateway(sync_client=FakeSyncClient()).list_project_issue_types_sync(
+            "project-1"
+        )
+
+        self.assertEqual(
+            [(item.id, item.component_type) for item in issue_types],
+            [("requirement-type", "requirement"), ("task-type", "task")],
+        )
+
     def test_list_defects_sync_maps_sync_pagination_failure_to_safe_payload_error(self):
         class RecordingPaginationClient(FakeSyncClient):
             def fetch_defects(self, **kwargs) -> list[dict]:
@@ -1204,6 +1314,12 @@ class TestOnesGatewayWikiAndRequirements(unittest.IsolatedAsyncioTestCase):
             "title": " Requirement ",
             "project": {"uuid": 1, "name": " Project "},
             "status": {"uuid": 2, "name": " Status ", "category": " doing "},
+            "issueType": {
+                "uuid": "requirement-type",
+                "name": " Requirement ",
+                "builtIn": True,
+                "detailType": "requirement",
+            },
             "description": {"z": "中文", "a": [2, 1]},
             "relatedWikiPages": [],
         }
@@ -1215,4 +1331,13 @@ class TestOnesGatewayWikiAndRequirements(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.title, "Requirement")
         self.assertEqual((record.project.id, record.project.name), ("1", "Project"))
         self.assertEqual((record.status.id, record.status.name, record.status.category), ("2", "Status", "doing"))
+        self.assertEqual(
+            (
+                record.issue_type.id,
+                record.issue_type.name,
+                record.issue_type.built_in,
+                record.issue_type.detail_type,
+            ),
+            ("requirement-type", "Requirement", True, "requirement"),
+        )
         self.assertEqual(record.description, '{"a":[2,1],"z":"中文"}')

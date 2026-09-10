@@ -10,6 +10,7 @@ import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import ClassVar
 
 from .codex_runner import (
     GuardedCodingAgentRunner,
@@ -56,6 +57,8 @@ def safe_claude_environment(source: Mapping[str, str]) -> dict[str, str]:
 @dataclass(slots=True)
 class ClaudeRunner(GuardedCodingAgentRunner):
     """Claude Code transport over the shared guarded runner."""
+
+    provider_key: ClassVar[str] = "claude"
 
     claude_command_resolver: Callable[[], Path] = field(
         default=lambda: resolve_coding_agent_executable("claude"), repr=False
