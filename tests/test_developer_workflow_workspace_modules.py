@@ -7,10 +7,18 @@ from types import SimpleNamespace
 import pytest
 from textual.app import App
 from textual import on
-from textual.widgets import Button, Input, ListView, Static, TabbedContent
+from textual.widgets import Button, Input, ListView, Select, Static, TabbedContent
 
 from src.developer_workflow.contracts import RepositoryMapping, WorkflowRun, WorkflowState, WorkflowType
-from src.developer_workflow.tui.models import RunFilter, WorkspaceSummary, RunSummary, RunActivity
+from src.developer_workflow.tui.models import (
+    FilterChoice,
+    RequirementChoice,
+    RequirementFilterOptions,
+    RunActivity,
+    RunFilter,
+    RunSummary,
+    WorkspaceSummary,
+)
 from src.developer_workflow.tui.run_index import RunIndex
 from src.developer_workflow.tui.screens import WorkspaceDetailScreen, RequirementWizardScreen, WorkspaceListPane, WorkspaceRenameScreen
 from dataclasses import replace
@@ -87,17 +95,56 @@ class Supervisor:
     async def run_readonly(self, _action, call, *args):
         return call(*args)
 
+    async def run_mutation(self, _run_id, _action, call, *args):
+        return call(*args)
+
 
 class Controller:
     def __init__(self):
         self.queries = []
         self.fail = False
+        self.requirement_queries = []
+        self.requirement_starts = []
+        self.requirement_fail = False
+        self.discarded_requirement_sessions = []
 
     def list_workspace_runs(self, workspace):
         self.queries.append(workspace)
         if self.fail:
             raise RuntimeError("do not show backend details")
         return ()
+
+    def query_requirements(self, project, iteration, assignee, status_ids, issue_type_id):
+        self.requirement_queries.append(
+            (project, iteration, assignee, status_ids, issue_type_id)
+        )
+        if self.requirement_fail:
+            raise RuntimeError("do not show backend details")
+        return (
+            "requirement-session",
+            (
+                RequirementChoice(
+                    requirement_id="requirement-1",
+                    number="REQ-1",
+                    title="支持工作区需求收件箱",
+                    project_id=project,
+                    iteration_id=iteration,
+                    status_id="open",
+                ),
+            ),
+        )
+
+    def load_requirement_filter_options(self, project):
+        return RequirementFilterOptions(
+            issue_types=(FilterChoice(id="story", name="Requirement", selected=True),)
+        )
+
+    def start_requirement(self, requirement_id, session_id=None):
+        self.requirement_starts.append((requirement_id, session_id))
+        raise RuntimeError("stop after proving the candidate capability was forwarded")
+
+    def discard_requirement_session(self, session_id):
+        self.discarded_requirement_sessions.append(session_id)
 
 
 class WorkspaceApp(App):
@@ -183,7 +230,7 @@ async def test_workspace_task_cards_and_navigation(size):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("size", [(80, 24), (140, 42)])
+@pytest.mark.parametrize("size", [(60, 24), (80, 24), (140, 42), (190, 42)])
 async def test_workspace_tabs_footer_and_requirement_scope(size):
     app = WorkspaceApp()
     async with app.run_test(size=size) as pilot:
@@ -211,15 +258,182 @@ async def test_workspace_tabs_footer_and_requirement_scope(size):
         assert not screen.query_one("#workspace-refresh-tasks", Button).disabled
         tabs.active = "workspace-requirements-tab"
         await pilot.pause()
+        screen.query_one("#workspace-requirement-assignee", Input).value = "user-1"
+        screen.query_one("#workspace-requirement-status-ids", Input).value = "open,ready"
+        screen.query_one("#workspace-requirement-type-id", Select).value = "story"
         screen.query_one("#workspace-query-requirements", Button).press()
-        await pilot.pause()
-        assert isinstance(app.screen, RequirementWizardScreen)
         for _ in range(30):
-            if app.screen.query("#requirement-project"):
-                break
             await pilot.pause(0.05)
-        project = app.screen.query_one("#requirement-project", Input)
-        iteration = app.screen.query_one("#requirement-iteration", Input)
-        assert (project.value, iteration.value) == ("project", "iteration")
-        assert project.disabled and iteration.disabled
+            mounted_cards = list(screen.query(".workspace-requirement-card"))
+            if mounted_cards and mounted_cards[0].region.width:
+                break
+        assert app.controller.requirement_queries == [
+            ("project", "iteration", "user-1", ("open", "ready"), "story")
+        ]
+        cards = list(screen.query(".workspace-requirement-card"))
+        assert len(cards) == 1
+        card = cards[0]
+        info = card.query_one(".workspace-requirement-info")
+        actions = card.query_one(".workspace-requirement-actions")
+        assert actions.region.x > info.region.x
+        assert actions.region.right < card.region.right
+        assert card.region.right <= screen.region.right
+        assert len(actions.query("Button")) == 1
+        assert "支持工作区需求收件箱" in str(
+            card.query_one(".workspace-requirement-title", Static).render()
+        )
+        card.query_one(".workspace-requirement-start", Button).press()
+        for _ in range(30):
+            await pilot.pause(0.05)
+            if app.controller.requirement_starts:
+                break
+        assert isinstance(app.screen, RequirementWizardScreen)
+        assert app.controller.requirement_starts == [
+            ("requirement-1", "requirement-session")
+        ]
         assert not app.screen.query("#start-requirement")
+        assert not app.screen.query("#requirement-project")
+
+
+@pytest.mark.asyncio
+async def test_failed_requirement_refresh_revokes_visible_candidate_session():
+    app = WorkspaceApp()
+    async with app.run_test(size=(140, 42)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        screen.query_one("#workspace-modules", TabbedContent).active = (
+            "workspace-requirements-tab"
+        )
+        await pilot.pause()
+        screen.query_one("#workspace-requirement-type-id", Select).value = "story"
+        screen.query_one("#workspace-query-requirements", Button).press()
+        for _ in range(30):
+            await pilot.pause(0.05)
+            if screen.query(".workspace-requirement-card"):
+                break
+        assert screen._requirement_session_id == "requirement-session"
+        assert len(screen.query(".workspace-requirement-card")) == 1
+
+        app.controller.requirement_fail = True
+        screen.query_one("#workspace-query-requirements", Button).press()
+        for _ in range(30):
+            await pilot.pause(0.05)
+            if "查询失败" in str(
+                screen.query_one("#workspace-requirement-status", Static).render()
+            ):
+                break
+
+        assert screen._requirement_session_id is None
+        assert not screen.query(".workspace-requirement-card")
+        assert app.controller.discarded_requirement_sessions == [
+            "requirement-session"
+        ]
+        assert "查询失败" in str(
+            screen.query_one("#workspace-requirement-status", Static).render()
+        )
+
+
+@pytest.mark.asyncio
+async def test_requirement_render_failure_revokes_new_candidate_session():
+    app = WorkspaceApp()
+    async with app.run_test(size=(140, 42)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        screen.query_one("#workspace-modules", TabbedContent).active = (
+            "workspace-requirements-tab"
+        )
+        await pilot.pause()
+        screen.query_one("#workspace-requirement-type-id", Select).value = "story"
+        original_render = screen._render_requirement_candidates
+        render_calls = 0
+
+        async def fail_after_query():
+            nonlocal render_calls
+            render_calls += 1
+            if render_calls == 2:
+                raise RuntimeError("render failed")
+            await original_render()
+
+        screen._render_requirement_candidates = fail_after_query
+        screen.query_one("#workspace-query-requirements", Button).press()
+        for _ in range(30):
+            await pilot.pause(0.05)
+            if app.controller.discarded_requirement_sessions:
+                break
+
+        assert app.controller.discarded_requirement_sessions == [
+            "requirement-session"
+        ]
+        assert screen._requirement_session_id is None
+        assert not screen.query(".workspace-requirement-card")
+
+
+@pytest.mark.asyncio
+async def test_requirement_push_failure_revokes_session_and_restores_action():
+    app = WorkspaceApp()
+    async with app.run_test(size=(140, 42)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        screen.query_one("#workspace-modules", TabbedContent).active = (
+            "workspace-requirements-tab"
+        )
+        for _ in range(30):
+            await pilot.pause(0.05)
+            if not screen.query_one("#workspace-query-requirements", Button).disabled:
+                break
+        screen.query_one("#workspace-requirement-type-id", Select).value = "story"
+        screen.query_one("#workspace-query-requirements", Button).press()
+        for _ in range(30):
+            await pilot.pause(0.05)
+            if screen.query(".workspace-requirement-card"):
+                break
+        original_push_screen = app.push_screen
+
+        def fail_push(*_args, **_kwargs):
+            raise RuntimeError("push failed")
+
+        app.push_screen = fail_push
+        action = screen.query_one(".workspace-requirement-start", Button)
+        action.press()
+        await pilot.pause()
+        app.push_screen = original_push_screen
+
+        assert app.controller.discarded_requirement_sessions == [
+            "requirement-session"
+        ]
+        assert screen._requirement_session_id is None
+        assert not action.disabled
+        assert "重新查询" in str(
+            screen.query_one("#workspace-requirement-status", Static).render()
+        )
+
+
+@pytest.mark.asyncio
+async def test_leaving_workspace_revokes_visible_requirement_session():
+    app = WorkspaceApp()
+    async with app.run_test(size=(140, 42)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        screen.query_one("#workspace-modules", TabbedContent).active = (
+            "workspace-requirements-tab"
+        )
+        for _ in range(30):
+            await pilot.pause(0.05)
+            if not screen.query_one("#workspace-query-requirements", Button).disabled:
+                break
+        screen.query_one("#workspace-requirement-type-id", Select).value = "story"
+        screen.query_one("#workspace-query-requirements", Button).press()
+        for _ in range(30):
+            await pilot.pause(0.05)
+            if screen.query(".workspace-requirement-card"):
+                break
+
+        screen.query_one("#workspace-detail-back", Button).press()
+        for _ in range(30):
+            await pilot.pause(0.05)
+            if app.controller.discarded_requirement_sessions:
+                break
+
+        assert app.controller.discarded_requirement_sessions == [
+            "requirement-session"
+        ]

@@ -400,6 +400,41 @@ class TestOnesAsyncClientGraphQL:
 
     @respx.mock
     @pytest.mark.asyncio
+    async def test_fetch_issue_type_configs_returns_only_requested_project(self):
+        settings = OnesSettings(
+            base_url="http://ones.test", email="", password="", team_id="team1",
+            _env_file=None,
+        )
+        client = OnesAsyncClient(settings)
+        route = respx.post(
+            "http://ones.test/project/api/project/team/team1/stamps/data"
+            "?t=issue_type,issue_type_config,project"
+        ).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "issue_type_config": {
+                        "issue_type_configs": [
+                            {"project_uuid": "proj1", "issue_type_uuid": "type-1"},
+                            {"scope": "proj2", "issue_type_uuid": "type-2"},
+                        ]
+                    }
+                },
+            )
+        )
+
+        result = await client.fetch_issue_type_configs("proj1")
+
+        assert result == [{"project_uuid": "proj1", "issue_type_uuid": "type-1"}]
+        assert json.loads(route.calls[0].request.content) == {
+            "issue_type": 0,
+            "issue_type_config": 0,
+            "project": 0,
+        }
+        await client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
     async def test_fetch_task_status_definitions_uses_get(self):
         settings = OnesSettings(
             base_url="http://ones.test", email="", password="", team_id="team1",

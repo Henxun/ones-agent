@@ -72,6 +72,12 @@ class DefectFilterOptions:
 
 
 @dataclass(frozen=True, slots=True)
+class RequirementFilterOptions:
+    issue_types: tuple[FilterChoice, ...]
+    unavailable: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class WorkspaceRepositoryInput:
     """One local or remote repository selected while creating a workspace."""
 

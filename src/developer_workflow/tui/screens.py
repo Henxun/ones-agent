@@ -1225,18 +1225,41 @@ class DefectWizardScreen(_MappingWizardScreen):
 class RequirementWizardScreen(_MappingWizardScreen):
     """List ONES requirements, then enter the shared mapping flow."""
 
-    def __init__(self, controller: TuiController, supervisor: RunTaskSupervisor,
-                 *, workspace: WorkspaceSummary | None = None) -> None:
+    def __init__(
+        self,
+        controller: TuiController,
+        supervisor: RunTaskSupervisor,
+        *,
+        workspace: WorkspaceSummary | None = None,
+        candidate_session_id: str | None = None,
+        candidates: tuple[RequirementChoice, ...] = (),
+        selected_candidate: int | None = None,
+    ) -> None:
         super().__init__(
             controller,
             supervisor,
             screen_id="requirement-wizard-screen",
         )
-        self._requirement_session_id: str | None = None
-        self._requirements: tuple[RequirementChoice, ...] = ()
+        self._requirement_session_id = candidate_session_id
+        self._requirements = candidates
+        self._selected_candidate = selected_candidate
         self.workspace = workspace
 
     def _initial_widgets(self) -> tuple[Widget, ...]:
+        if self._requirement_session_id is not None and self._selected_candidate is not None:
+            candidate = (
+                self._requirements[self._selected_candidate]
+                if 0 <= self._selected_candidate < len(self._requirements)
+                else None
+            )
+            return (
+                Label("正在准备需求工作流"),
+                Static(
+                    candidate.title if candidate is not None else "正在校验查询结果…",
+                    markup=False,
+                    classes="workspace-requirement-transition",
+                ),
+            )
         widgets = (
             Label("Requirements from ONES"),
             Input(placeholder="ONES requirement ID", id="requirement-id"),
@@ -1255,6 +1278,12 @@ class RequirementWizardScreen(_MappingWizardScreen):
         )
         # A workspace entry must not offer the unscoped direct-ID mutation path.
         return widgets[3:] if self.workspace else widgets
+
+    async def on_mount(self) -> None:
+        if self._requirement_session_id is not None and self._selected_candidate is not None:
+            self._step = self.STEP_CANDIDATE
+            self._show_notice("正在准备需求工作流…")
+            await self._select_requirement(self._selected_candidate)
 
     async def _query_requirements(self) -> None:
         issue_type_id = self.query_one("#requirement-type-id", Input).value.strip()
@@ -2229,6 +2258,12 @@ class WorkspaceDetailScreen(Screen[bool]):
         self._defect_status_ids: tuple[str, ...] = ()
         self._defect_options_loaded = False
         self._filter_interactions_armed = False
+        self._requirement_session_id: str | None = None
+        self._requirement_candidates: tuple[RequirementChoice, ...] = ()
+        self._requirement_result_generation = 0
+        self._requirement_querying = False
+        self._requirement_view_active = False
+        self._requirement_options_loaded = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="workspace-detail-body"):
@@ -2287,9 +2322,48 @@ class WorkspaceDetailScreen(Screen[bool]):
                 with TabPane("查询需求", id="workspace-requirements-tab"):
                     with VerticalScroll(classes="workspace-module-body"):
                         yield Static("需求查询与实现", classes="workspace-module-title")
-                        yield Static("自动带入本工作区项目和迭代。查询需求后选择目标，继续仓库映射与实现流程。",
-                                     classes="workspace-module-description")
-                        yield Button("查询需求", id="workspace-query-requirements", variant="primary")
+                        yield Static(
+                            "项目与迭代沿用工作区范围。筛选、浏览和发起实现均在当前页面完成。",
+                            classes="workspace-module-description",
+                        )
+                        with Vertical(classes="workspace-requirement-filter-card"):
+                            with Horizontal(classes="workspace-requirement-filter-row"):
+                                yield Static("负责人", classes="workspace-requirement-filter-label")
+                                yield Input(
+                                    placeholder="可选 ONES 成员 ID",
+                                    id="workspace-requirement-assignee",
+                                )
+                                yield Static("状态", classes="workspace-requirement-filter-label")
+                                yield Input(
+                                    placeholder="可选状态 ID，逗号分隔",
+                                    id="workspace-requirement-status-ids",
+                                )
+                            with Horizontal(classes="workspace-requirement-filter-row"):
+                                yield Static("需求类型", classes="workspace-requirement-filter-label")
+                                yield Select(
+                                    [],
+                                    prompt="正在加载 ONES 类型…",
+                                    id="workspace-requirement-type-id",
+                                    disabled=True,
+                                )
+                                yield Button(
+                                    "查询需求",
+                                    id="workspace-query-requirements",
+                                    variant="primary",
+                                    disabled=True,
+                                )
+                        with Horizontal(classes="workspace-requirement-results-header"):
+                            yield Static("需求列表", classes="workspace-requirement-results-heading")
+                            yield Static(
+                                "填写筛选条件后查询",
+                                id="workspace-requirement-status",
+                                markup=False,
+                            )
+                        with Vertical(id="workspace-requirement-results"):
+                            yield Static(
+                                "查询后，需求会显示在这里。",
+                                classes="workspace-requirement-empty",
+                            )
                 with TabPane("任务列表", id="workspace-tasks-tab"):
                     yield Static("本工作区的缺陷与需求任务；未绑定工作区的任务请到全局 Tasks 查看。",
                                  classes="workspace-module-description")
@@ -2319,12 +2393,27 @@ class WorkspaceDetailScreen(Screen[bool]):
             yield Button("删除工作区", id="workspace-delete", variant="error")
 
     async def on_mount(self) -> None:
+        self._requirement_view_active = True
         self.set_focus(None)
         self.set_timer(
             self.ENTRY_INPUT_GUARD_SECONDS,
             self._arm_filter_interactions,
         )
-        await self._load_defect_options()
+        await asyncio.gather(
+            self._load_defect_options(),
+            self._load_requirement_options(),
+        )
+
+    def on_unmount(self) -> None:
+        self._requirement_view_active = False
+        self._requirement_result_generation += 1
+        session_id = self._requirement_session_id
+        self._requirement_session_id = None
+        discard_session = getattr(
+            self._controller, "discard_requirement_session", None
+        )
+        if session_id is not None and callable(discard_session):
+            discard_session(session_id)
 
     def _arm_filter_interactions(self) -> None:
         self._filter_interactions_armed = True
@@ -2381,6 +2470,41 @@ class WorkspaceDetailScreen(Screen[bool]):
             status.update("筛选项加载失败，请检查 ONES 连接后重试")
         finally:
             reload_button.disabled = False
+
+    async def _load_requirement_options(self) -> None:
+        status = self.query_one("#workspace-requirement-status", Static)
+        select = self.query_one("#workspace-requirement-type-id", Select)
+        query_button = self.query_one("#workspace-query-requirements", Button)
+        source = getattr(self._controller, "load_requirement_filter_options", None)
+        if not callable(source):
+            status.update("当前控制器不支持需求类型查询")
+            return
+        select.disabled = True
+        query_button.disabled = True
+        status.update("正在加载项目需求类型…")
+        try:
+            options = await self._supervisor.run_readonly(
+                "workspace-requirement-options",
+                source,
+                self.workspace.project_id,
+            )
+            select.set_options((item.name, item.id) for item in options.issue_types)
+            selected = next(
+                (item.id for item in options.issue_types if item.selected),
+                options.issue_types[0].id if options.issue_types else None,
+            )
+            if selected is not None:
+                select.value = selected
+            select.disabled = not options.issue_types
+            query_button.disabled = not options.issue_types
+            self._requirement_options_loaded = bool(options.issue_types)
+            status.update(
+                "项目未配置可用的工作项类型"
+                if not options.issue_types
+                else "筛选项已就绪，点击查询查看需求列表"
+            )
+        except Exception:
+            status.update("需求类型加载失败，请检查 ONES 连接后重试")
 
     def _update_defect_status_button(self) -> None:
         button = self.query_one("#workspace-defect-status-filter-button", Button)
@@ -2470,11 +2594,205 @@ class WorkspaceDetailScreen(Screen[bool]):
             self.workspace = workspace
             self.query_one("#workspace-heading", Static).update(Text(workspace.label, style="bold cyan"))
 
+    async def _render_requirement_candidates(self) -> None:
+        results = self.query_one("#workspace-requirement-results", Vertical)
+        await results.remove_children()
+        if not self._requirement_candidates:
+            await results.mount(
+                Static("当前筛选条件下暂无需求。", classes="workspace-requirement-empty")
+            )
+            return
+        for index, candidate in enumerate(self._requirement_candidates):
+            await results.mount(
+                Horizontal(
+                    Vertical(
+                        Static(
+                            candidate.title,
+                            markup=False,
+                            classes="workspace-requirement-title",
+                        ),
+                        Static(
+                            f"编号：{candidate.number or candidate.requirement_id}  ·  "
+                            f"状态：{candidate.status_id or '未知'}",
+                            markup=False,
+                            classes="workspace-requirement-meta",
+                        ),
+                        Static(
+                            f"需求 ID：{candidate.requirement_id}",
+                            markup=False,
+                            classes="workspace-requirement-meta",
+                        ),
+                        classes="workspace-requirement-info",
+                    ),
+                    Horizontal(
+                        Button(
+                            "分析并实现",
+                            id=(
+                                "workspace-implement-requirement-"
+                                f"{self._requirement_result_generation}-{index}"
+                            ),
+                            variant="primary",
+                            classes="workspace-requirement-start",
+                        ),
+                        classes="workspace-requirement-actions",
+                    ),
+                    classes="workspace-requirement-card",
+                )
+            )
+
     @on(Button.Pressed, "#workspace-query-requirements")
-    def _query_requirements(self) -> None:
-        self.app.push_screen(RequirementWizardScreen(
-            self._controller, self._supervisor, workspace=self.workspace,
-        ), callback=self._workflow_started)
+    async def _query_requirements(self) -> None:
+        if self._requirement_querying:
+            return
+        self._requirement_querying = True
+        status = self.query_one("#workspace-requirement-status", Static)
+        button = self.query_one("#workspace-query-requirements", Button)
+        button.disabled = True
+        assignee = self.query_one("#workspace-requirement-assignee", Input).value.strip()
+        status_values = self.query_one(
+            "#workspace-requirement-status-ids", Input
+        ).value
+        status_ids = tuple(
+            item.strip() for item in status_values.split(",") if item.strip()
+        )
+        issue_type_value = self.query_one(
+            "#workspace-requirement-type-id", Select
+        ).value
+        issue_type_id = issue_type_value if type(issue_type_value) is str else ""
+        # Every new query attempt invalidates the visible result capability.
+        # The controller session is single-use, so stale cards must never remain
+        # actionable after invalid input or a failed refresh.
+        previous_session_id = self._requirement_session_id
+        self._requirement_session_id = None
+        self._requirement_candidates = ()
+        self._requirement_result_generation += 1
+        query_generation = self._requirement_result_generation
+        owned_session_id: str | None = None
+        discard_session = getattr(
+            self._controller, "discard_requirement_session", None
+        )
+        try:
+            if previous_session_id is not None and callable(discard_session):
+                await self._supervisor.run_readonly(
+                    "discard-workspace-requirement-session",
+                    discard_session,
+                    previous_session_id,
+                )
+            await self._render_requirement_candidates()
+            if (
+                not self._requirement_options_loaded
+                or not issue_type_id
+                or not _SAFE_MAPPING_KEY.fullmatch(issue_type_id)
+                or (assignee and not _SAFE_MAPPING_KEY.fullmatch(assignee))
+                or any(not _SAFE_MAPPING_KEY.fullmatch(item) for item in status_ids)
+            ):
+                status.update(
+                    "请填写有效的需求类型 ID；负责人和状态 ID 仅支持字母、数字、下划线及连字符"
+                )
+                return
+            status.update("正在查询需求…")
+            session_id, items = await self._supervisor.run_readonly(
+                "workspace-query-requirements",
+                self._controller.query_requirements,
+                self.workspace.project_id,
+                self.workspace.iteration_id,
+                assignee,
+                status_ids,
+                issue_type_id,
+            )
+            if (
+                not self._requirement_view_active
+                or not self.is_mounted
+                or query_generation != self._requirement_result_generation
+            ):
+                if callable(discard_session):
+                    discard_session(session_id)
+                return
+            owned_session_id = session_id if items else None
+            self._requirement_candidates = tuple(items)
+            await self._render_requirement_candidates()
+            if (
+                not self._requirement_view_active
+                or not self.is_mounted
+                or query_generation != self._requirement_result_generation
+            ):
+                if owned_session_id is not None and callable(discard_session):
+                    discard_session(owned_session_id)
+                    owned_session_id = None
+                return
+            self._requirement_session_id = owned_session_id
+            owned_session_id = None
+            status.update(
+                f"共找到 {len(items)} 个需求 · 可直接发起分析并实现"
+                if items
+                else "当前筛选条件下没有需求"
+            )
+        except Exception:
+            if owned_session_id is not None and callable(discard_session):
+                discard_session(owned_session_id)
+            if not self._requirement_view_active or not self.is_mounted:
+                return
+            self._requirement_session_id = None
+            self._requirement_candidates = ()
+            await self._render_requirement_candidates()
+            status.update("需求查询失败，请检查 ONES 连接及筛选条件后重试")
+        finally:
+            self._requirement_querying = False
+            button.disabled = False
+
+    @on(Button.Pressed, ".workspace-requirement-start")
+    def _start_workspace_requirement(self, event: Button.Pressed) -> None:
+        button_id = event.button.id or ""
+        prefix = "workspace-implement-requirement-"
+        if not button_id.startswith(prefix):
+            return
+        try:
+            generation_text, index_text = button_id.removeprefix(prefix).split("-", 1)
+            generation = int(generation_text)
+            index = int(index_text)
+        except ValueError:
+            return
+        if (
+            self._requirement_session_id is None
+            or generation != self._requirement_result_generation
+            or not 0 <= index < len(self._requirement_candidates)
+        ):
+            self.query_one("#workspace-requirement-status", Static).update(
+                "查询结果已失效，请重新查询"
+            )
+            return
+        session_id = self._requirement_session_id
+        for action in self.query(".workspace-requirement-actions Button"):
+            action.disabled = True
+        self.query_one("#workspace-requirement-status", Static).update(
+            "已选择需求，正在进入分析并实现流程…"
+        )
+        try:
+            self.app.push_screen(
+                RequirementWizardScreen(
+                    self._controller,
+                    self._supervisor,
+                    workspace=self.workspace,
+                    candidate_session_id=session_id,
+                    candidates=self._requirement_candidates,
+                    selected_candidate=index,
+                ),
+                callback=self._workflow_started,
+            )
+        except Exception:
+            discard_session = getattr(
+                self._controller, "discard_requirement_session", None
+            )
+            if callable(discard_session):
+                discard_session(session_id)
+            for action in self.query(".workspace-requirement-actions Button"):
+                action.disabled = False
+            self.query_one("#workspace-requirement-status", Static).update(
+                "无法打开需求工作流，请重新查询后重试"
+            )
+            self._requirement_session_id = None
+            return
+        self._requirement_session_id = None
 
     @on(TabbedContent.TabActivated, "#workspace-modules")
     async def _module_changed(self, event: TabbedContent.TabActivated) -> None:

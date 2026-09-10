@@ -8,9 +8,11 @@ from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from concurrent.futures import CancelledError, Future, wait
 from dataclasses import dataclass, replace
+from math import isfinite
+from pathlib import Path
 import secrets
 import subprocess
-from pathlib import Path
+import time
 from threading import Event, Lock, Thread, current_thread
 from typing import Literal
 
@@ -32,6 +34,7 @@ from .models import (
     DefectChoice,
     DefectFilterOptions,
     FilterChoice,
+    RequirementFilterOptions,
     RequirementChoice,
     RunActivity,
     RunDetail,
@@ -266,6 +269,9 @@ class _CandidateSession:
 @dataclass(frozen=True, slots=True)
 class _RequirementSession:
     candidate_ids: frozenset[str]
+    project_id: str
+    iteration_id: str
+    expires_at: float
 
 
 class TuiController:
@@ -277,6 +283,8 @@ class TuiController:
         run_index: RunIndex,
         *,
         max_candidate_sessions: int = 8,
+        candidate_session_ttl_seconds: float = 300.0,
+        monotonic_clock: Callable[[], float] = time.monotonic,
         workflow_saver: Callable[[DeveloperWorkflowConfig], None] | None = None,
         publishing_enabled: bool = True,
     ) -> None:
@@ -284,9 +292,19 @@ class TuiController:
             raise TuiControllerError("candidate session capacity is invalid")
         if type(publishing_enabled) is not bool:
             raise TuiControllerError("publishing capability is invalid")
+        if (
+            isinstance(candidate_session_ttl_seconds, bool)
+            or not isinstance(candidate_session_ttl_seconds, (int, float))
+            or not isfinite(candidate_session_ttl_seconds)
+            or candidate_session_ttl_seconds <= 0
+            or not callable(monotonic_clock)
+        ):
+            raise TuiControllerError("candidate session lifetime is invalid")
         self._orchestrator = orchestrator
         self._run_index = run_index
         self._max_candidate_sessions = max_candidate_sessions
+        self._candidate_session_ttl_seconds = float(candidate_session_ttl_seconds)
+        self._monotonic_clock = monotonic_clock
         self._workflow_saver = workflow_saver
         self._publishing_enabled = publishing_enabled
         self._candidate_sessions: OrderedDict[str, _CandidateSession] = OrderedDict()
@@ -858,7 +876,11 @@ class TuiController:
                 )
             )
             items = tuple(RequirementChoice.from_requirement(item) for item in records)
-            if len({item.requirement_id for item in items}) != len(items):
+            if (
+                len({item.requirement_id for item in items}) != len(items)
+                or any(item.project_id != project for item in items)
+                or any(iteration and item.iteration_id != iteration for item in items)
+            ):
                 raise ValueError
         except _AsyncRuntimeError:
             raise TuiControllerError(_QUERY_UNAVAILABLE) from None
@@ -868,20 +890,69 @@ class TuiController:
         with self._candidate_lock:
             if self._closed:
                 raise TuiControllerError(_QUERY_UNAVAILABLE)
-            self._requirement_sessions[session_id] = _RequirementSession(
-                candidate_ids=frozenset(item.requirement_id for item in items)
-            )
-            while len(self._requirement_sessions) > self._max_candidate_sessions:
-                self._requirement_sessions.popitem(last=False)
+            if items:
+                self._requirement_sessions[session_id] = _RequirementSession(
+                    candidate_ids=frozenset(item.requirement_id for item in items),
+                    project_id=project,
+                    iteration_id=iteration,
+                    expires_at=(
+                        self._monotonic_clock() + self._candidate_session_ttl_seconds
+                    ),
+                )
+                while len(self._requirement_sessions) > self._max_candidate_sessions:
+                    self._requirement_sessions.popitem(last=False)
         return session_id, items
+
+    def load_requirement_filter_options(self, project: str) -> RequirementFilterOptions:
+        """Load project-scoped ONES work-item types for the requirement picker."""
+
+        if type(project) is not str or not project.strip():
+            raise TuiControllerError(_QUERY_UNAVAILABLE)
+        gateway = getattr(getattr(self._orchestrator, "requirement_flow", None), "gateway", None)
+        source = getattr(gateway, "list_project_issue_types", None)
+        if not callable(source):
+            raise TuiControllerError(_QUERY_UNAVAILABLE)
+        try:
+            records = self._async_runtime.submit(source(project))
+            if not isinstance(records, list):
+                raise ValueError
+            choices: dict[str, FilterChoice] = {}
+            for record in records:
+                identity = getattr(record, "id", None)
+                name = getattr(record, "name", None)
+                if type(identity) is not str or type(name) is not str:
+                    raise ValueError
+                choice = FilterChoice(
+                    id=validate_tui_input_text(identity, maximum=128),
+                    name=safe_tui_text(name, maximum=256),
+                    selected=name.strip().casefold() == "需求",
+                )
+                choices[choice.id] = choice
+            return RequirementFilterOptions(issue_types=tuple(choices.values()))
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            raise TuiControllerError(_QUERY_UNAVAILABLE) from None
 
     def start_requirement(self, requirement_id: str, session_id: str | None = None) -> RunDetail:
         if session_id is not None:
             with self._candidate_lock:
                 session = self._requirement_sessions.pop(session_id, None)
-                if session is None or requirement_id not in session.candidate_ids:
+                if (
+                    session is None
+                    or session.expires_at <= self._monotonic_clock()
+                    or requirement_id not in session.candidate_ids
+                ):
                     raise TuiControllerError(_CANDIDATE_ERROR)
         return self._command(self._orchestrator.start_requirement, requirement_id)
+
+    def discard_requirement_session(self, session_id: str) -> None:
+        """Revoke a requirement query capability without starting a workflow."""
+
+        if type(session_id) is not str:
+            raise TuiControllerError(_CANDIDATE_ERROR)
+        with self._candidate_lock:
+            self._requirement_sessions.pop(session_id, None)
 
     def confirm_repository(
         self, run_id: str, mapping_key: str, expected_version: int

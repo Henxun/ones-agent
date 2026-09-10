@@ -16,7 +16,7 @@ from src.developer_workflow.contracts import (
     WorkflowState,
     WorkflowType,
 )
-from src.contracts import ProjectRef, RequirementRecord, StatusRef, WorkflowStatusRef
+from src.contracts import IssueTypeRef, ProjectRef, RequirementRecord, StatusRef, WorkflowStatusRef
 from src.developer_workflow.orchestrator import (
     DeveloperWorkflowOrchestrator,
     InvalidWorkflowAction,
@@ -59,8 +59,8 @@ class Requirements:
                 requirement_id="R-1",
                 number="REQ-1",
                 title="Export requirement",
-                project=ProjectRef(id="P-1", name="Project"),
-                iteration=ProjectRef(id="I-1", name="Iteration"),
+                project=ProjectRef(id="P", name="Project"),
+                iteration=ProjectRef(id="I", name="Iteration"),
                 status=StatusRef(id="todo", name="Todo"),
             )
         ]
@@ -314,6 +314,156 @@ def test_query_requirements_uses_bounded_gateway_session():
             "assignee": "A",
             "status_ids": ("todo",),
         }
+    finally:
+        controller.close()
+
+
+def test_requirement_filter_options_use_project_metadata_and_select_requirement():
+    class RequirementTypes:
+        async def list_project_issue_types(self, project):
+            assert project == "P"
+            return [
+                IssueTypeRef(id="task-type", name="任务"),
+                IssueTypeRef(id="requirement-type", name="需求"),
+            ]
+
+    orchestrator = Orchestrator()
+    orchestrator.requirement_flow = SimpleNamespace(gateway=RequirementTypes())
+    controller = TuiController(orchestrator, Index())
+    try:
+        options = controller.load_requirement_filter_options("P")
+        assert [item.id for item in options.issue_types] == [
+            "task-type",
+            "requirement-type",
+        ]
+        assert [item.id for item in options.issue_types if item.selected] == [
+            "requirement-type"
+        ]
+    finally:
+        controller.close()
+
+
+def test_empty_requirement_query_does_not_consume_session_capacity():
+    class EmptyRequirements:
+        async def list_requirements(self, **_kwargs):
+            return []
+
+    orchestrator = Orchestrator()
+    orchestrator.requirement_flow = SimpleNamespace(gateway=EmptyRequirements())
+    controller = TuiController(orchestrator, Index(), max_candidate_sessions=1)
+    try:
+        session_id, items = controller.query_requirements("P", "I", "", (), "story")
+
+        assert session_id
+        assert items == ()
+        assert controller._requirement_sessions == {}
+    finally:
+        controller.close()
+
+
+@pytest.mark.parametrize(
+    ("project_id", "iteration_id"),
+    [("other-project", "I"), ("P", "other-iteration")],
+)
+def test_requirement_query_rejects_candidates_outside_workspace_scope(
+    project_id, iteration_id
+):
+    class MixedScopeRequirements:
+        async def list_requirements(self, **_kwargs):
+            return [
+                RequirementRecord(
+                    requirement_id="R-foreign",
+                    number="REQ-foreign",
+                    title="Foreign requirement",
+                    project=ProjectRef(id=project_id, name="Project"),
+                    iteration=ProjectRef(id=iteration_id, name="Iteration"),
+                    status=StatusRef(id="todo", name="Todo"),
+                )
+            ]
+
+    orchestrator = Orchestrator()
+    orchestrator.requirement_flow = SimpleNamespace(gateway=MixedScopeRequirements())
+    controller = TuiController(orchestrator, Index())
+    try:
+        with pytest.raises(
+            TuiControllerError, match="^candidate snapshot is invalid$"
+        ):
+            controller.query_requirements("P", "I", "", (), "story")
+
+        assert controller._requirement_sessions == {}
+        assert not any(
+            call[0] == "start_requirement" for call in orchestrator.calls
+        )
+    finally:
+        controller.close()
+
+
+def test_requirement_candidate_session_is_one_shot():
+    orchestrator = Orchestrator()
+    orchestrator.requirement_flow = SimpleNamespace(gateway=Requirements())
+    controller = TuiController(orchestrator, Index())
+    try:
+        session_id, _items = controller.query_requirements(
+            "P", "I", "A", ("todo",), "requirement-type"
+        )
+
+        assert isinstance(controller.start_requirement("R-1", session_id), RunDetail)
+        with pytest.raises(
+            TuiControllerError, match="^candidate snapshot is invalid$"
+        ):
+            controller.start_requirement("R-1", session_id)
+        assert [call for call in orchestrator.calls if call[0] == "start_requirement"] == [
+            ("start_requirement", "R-1")
+        ]
+    finally:
+        controller.close()
+
+
+def test_requirement_candidate_session_expires_fail_closed():
+    now = [100.0]
+    orchestrator = Orchestrator()
+    orchestrator.requirement_flow = SimpleNamespace(gateway=Requirements())
+    controller = TuiController(
+        orchestrator,
+        Index(),
+        candidate_session_ttl_seconds=300,
+        monotonic_clock=lambda: now[0],
+    )
+    try:
+        session_id, _items = controller.query_requirements(
+            "P", "I", "A", ("todo",), "requirement-type"
+        )
+        now[0] = 400.0
+
+        with pytest.raises(
+            TuiControllerError, match="^candidate snapshot is invalid$"
+        ):
+            controller.start_requirement("R-1", session_id)
+        assert not any(
+            call[0] == "start_requirement" for call in orchestrator.calls
+        )
+    finally:
+        controller.close()
+
+
+def test_requirement_candidate_session_can_be_revoked_without_starting():
+    orchestrator = Orchestrator()
+    orchestrator.requirement_flow = SimpleNamespace(gateway=Requirements())
+    controller = TuiController(orchestrator, Index())
+    try:
+        session_id, _items = controller.query_requirements(
+            "P", "I", "A", ("todo",), "requirement-type"
+        )
+
+        controller.discard_requirement_session(session_id)
+
+        with pytest.raises(
+            TuiControllerError, match="^candidate snapshot is invalid$"
+        ):
+            controller.start_requirement("R-1", session_id)
+        assert not any(
+            call[0] == "start_requirement" for call in orchestrator.calls
+        )
     finally:
         controller.close()
 
@@ -855,6 +1005,17 @@ def test_constructor_requires_strict_positive_capacity():
     for value in (0, -1, True, 1.5):
         with pytest.raises(TuiControllerError):
             TuiController(Orchestrator(), Index(), max_candidate_sessions=value)
+
+
+@pytest.mark.parametrize("value", [0, -1, True, float("inf"), float("nan")])
+def test_constructor_requires_finite_positive_candidate_session_lifetime(value):
+    with pytest.raises(TuiControllerError):
+        TuiController(
+            Orchestrator(), Index(), candidate_session_ttl_seconds=value
+        )
+
+    with pytest.raises(TuiControllerError):
+        TuiController(Orchestrator(), Index(), monotonic_clock=None)
 
 
 def test_controller_deletes_local_task_through_authoritative_index(tmp_path):

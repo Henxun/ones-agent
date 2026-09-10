@@ -501,6 +501,126 @@ WorkspaceDeleteConfirmation > VerticalScroll {
     color: $text-muted;
 }
 
+.workspace-requirement-filter-card {
+    width: 100%;
+    height: auto;
+    border: round $primary;
+    background: $boost;
+    padding: 0 2 0 1;
+    margin-bottom: 1;
+}
+
+.workspace-requirement-filter-row {
+    width: 100%;
+    height: 3;
+}
+
+.workspace-requirement-filter-label {
+    width: 10;
+    height: 3;
+    color: $text-muted;
+    content-align: left middle;
+}
+
+.workspace-requirement-filter-row Input {
+    width: 1fr;
+    margin: 0 1 0 0;
+}
+
+.workspace-requirement-filter-row Select {
+    width: 1fr;
+    margin: 0 1 0 0;
+}
+
+#workspace-query-requirements {
+    width: 16;
+    height: 3;
+    margin: 0;
+}
+
+.workspace-requirement-results-header {
+    height: 2;
+    margin: 0 1;
+}
+
+.workspace-requirement-results-heading {
+    width: auto;
+    height: 2;
+    text-style: bold;
+    color: $accent;
+    content-align: left middle;
+}
+
+#workspace-requirement-status {
+    width: 1fr;
+    height: 2;
+    color: $text-muted;
+    content-align: right middle;
+    padding: 0 1;
+}
+
+#workspace-requirement-results {
+    height: auto;
+}
+
+.workspace-requirement-empty {
+    height: 5;
+    color: $text-muted;
+    border: round $panel;
+    background: $surface;
+    content-align: center middle;
+    padding: 0 2;
+    margin-bottom: 1;
+}
+
+.workspace-requirement-card {
+    width: 100%;
+    height: auto;
+    min-height: 7;
+    border: round $primary;
+    background: $surface;
+    padding: 1 2;
+    margin-bottom: 1;
+}
+
+.workspace-requirement-info {
+    width: 1fr;
+    height: auto;
+}
+
+.workspace-requirement-title {
+    height: auto;
+    text-style: bold;
+    color: $text;
+    margin-bottom: 1;
+}
+
+.workspace-requirement-meta {
+    height: auto;
+    color: $text-muted;
+}
+
+.workspace-requirement-actions {
+    width: 18;
+    min-width: 18;
+    height: 3;
+    align: right middle;
+    margin-left: 1;
+}
+
+.workspace-requirement-actions Button {
+    width: 17;
+    height: 3;
+    margin: 0;
+}
+
+.workspace-requirement-transition {
+    height: auto;
+    border: round $primary;
+    padding: 1 2;
+    color: $text-muted;
+}
+
 DefectStatusFilterScreen {
     align: center middle;
     background: $background 70%;

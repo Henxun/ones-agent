@@ -108,6 +108,70 @@ class OnesGateway:
     async def list_projects(self, include_archived: bool = False) -> list[dict]:
         return await self._call_async("fetch_projects", include_archived=include_archived)
 
+    async def list_project_issue_types(self, project_id: str) -> list[IssueTypeRef]:
+        """Return the work-item types enabled for one ONES project."""
+
+        definitions = await self._call_async("fetch_issue_types")
+        configs = await self._call_async("fetch_issue_type_configs", project_id)
+        return self._build_project_issue_types(definitions, configs, project_id)
+
+    def list_project_issue_types_sync(self, project_id: str) -> list[IssueTypeRef]:
+        definitions = self._call_sync("fetch_issue_types")
+        configs = self._call_sync("fetch_issue_type_configs", project_id)
+        return self._build_project_issue_types(definitions, configs, project_id)
+
+    @classmethod
+    def _build_project_issue_types(
+        cls,
+        definitions: object,
+        configs: object,
+        project_id: str,
+    ) -> list[IssueTypeRef]:
+        if (
+            type(project_id) is not str
+            or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", project_id) is None
+            or not isinstance(definitions, list)
+            or not isinstance(configs, list)
+        ):
+            raise OnesGatewayPayloadError("Malformed ONES project issue type metadata")
+        names: dict[str, str] = {}
+        for item in definitions:
+            if not isinstance(item, dict):
+                raise OnesGatewayPayloadError("Malformed ONES issue type definition")
+            identity = item.get("uuid")
+            name = item.get("name")
+            if (
+                type(identity) is not str
+                or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", identity) is None
+                or type(name) is not str
+                or not name.strip()
+            ):
+                raise OnesGatewayPayloadError("Malformed ONES issue type definition")
+            names[identity] = cls._ensure_utf8(name.strip(), context="issue type name")
+
+        result: list[IssueTypeRef] = []
+        seen: set[str] = set()
+        for item in configs:
+            if not isinstance(item, dict):
+                raise OnesGatewayPayloadError("Malformed ONES issue type config")
+            scope = item.get("project_uuid") or item.get("scope")
+            identity = item.get("issue_type_uuid")
+            if scope != project_id:
+                raise OnesGatewayPayloadError("Malformed ONES issue type config scope")
+            if type(identity) is not str or identity not in names:
+                raise OnesGatewayPayloadError("Malformed ONES issue type config identity")
+            if identity in seen:
+                continue
+            seen.add(identity)
+            configured_name = item.get("name")
+            name = (
+                cls._ensure_utf8(configured_name.strip(), context="issue type config name")
+                if type(configured_name) is str and configured_name.strip()
+                else names[identity]
+            )
+            result.append(IssueTypeRef(id=identity, name=name))
+        return result
+
     def parse_wiki_url(self, url: str) -> WikiPageRef:
         settings = self.settings
         if settings is None:

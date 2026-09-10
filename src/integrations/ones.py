@@ -171,6 +171,17 @@ GQL_FETCH_PROJECTS = """{
   }
 }"""
 
+GQL_FETCH_ISSUE_TYPES = """
+query IssueTypes {
+  issueTypes {
+    uuid
+    name
+    builtIn
+    detailType
+  }
+}
+"""
+
 GQL_FETCH_TASK_DETAIL = """
 query Task($key: Key) {
   task(key: $key) {
@@ -921,6 +932,35 @@ class OnesClient:
         response.raise_for_status()
         data = response.json()
         return list(data.get("task_status_configs", [])) if isinstance(data, dict) else []
+
+    def fetch_issue_types(self) -> list[dict]:
+        data = self._graphql(GQL_FETCH_ISSUE_TYPES, {}, t="issueTypes")
+        return list(data.get("issueTypes", [])) if isinstance(data, dict) else []
+
+    def fetch_issue_type_configs(self, project_id: str) -> list[dict]:
+        project_id = (project_id or "").strip()
+        if not project_id:
+            return []
+        response = self.session.post(
+            f"{self.base_url}/project/api/project/team/{self.team_id}/stamps/data"
+            "?t=issue_type,issue_type_config,project",
+            json={"issue_type": 0, "issue_type_config": 0, "project": 0},
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+        configs = (
+            data.get("issue_type_config", {}).get("issue_type_configs", [])
+            if isinstance(data, dict)
+            and isinstance(data.get("issue_type_config"), dict)
+            else []
+        )
+        return [
+            item
+            for item in configs
+            if isinstance(item, dict)
+            and (item.get("project_uuid") == project_id or item.get("scope") == project_id)
+        ]
 
     def fetch_task_status_definitions(self) -> list[dict]:
         response = self.session.get(

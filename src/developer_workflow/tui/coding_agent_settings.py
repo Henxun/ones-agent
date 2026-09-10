@@ -74,7 +74,8 @@ class CodingAgentSettingsPane(VerticalScroll):
         yield Label("Coding Agent", id="coding-agent-heading")
         yield Static(
             "检测本机已安装的编码工具，并选择工作流实际使用的 Agent。"
-            "未接入安全执行与结构化输出协议的工具只展示，不会进入可选列表。",
+            "启动检查不会验证账号登录；认证和安全执行能力仍会在任务启动时校验。"
+            "未接入结构化输出协议的工具只展示，不会进入可选列表。",
             id="coding-agent-description",
             markup=False,
         )
@@ -98,7 +99,7 @@ class CodingAgentSettingsPane(VerticalScroll):
         summary = Text()
         summary.append("检测到 ", style="dim")
         summary.append(str(installed), style="bold cyan")
-        summary.append(" 个工具   ·   可用于工作流 ", style="dim")
+        summary.append(" 个工具   ·   已验证可启动并可选择 ", style="dim")
         summary.append(str(usable), style="bold green")
         summary.append(" 个", style="dim")
         self.query_one("#coding-agent-summary", Static).update(
@@ -112,26 +113,35 @@ class CodingAgentSettingsPane(VerticalScroll):
             header_style="bold",
         )
         table.add_column("Agent", style="bold", min_width=14)
-        table.add_column("安装状态", min_width=12)
-        table.add_column("工作流能力", min_width=18)
+        table.add_column("安装", min_width=10)
+        table.add_column("启动检查", min_width=20)
+        table.add_column("工作流接入", min_width=22)
         table.add_column("可执行文件", ratio=2, overflow="fold")
         for item in self._catalog:
             if item.usable:
-                status = Text("● 可用", style="bold green")
-                capability = Text("已接入，可选择", style="cyan")
+                status = Text("● 已安装", style="bold green")
+                launch = Text(f"● 可启动 · {item.version}", style="cyan")
+                capability = Text("可选择 · 认证待运行时校验", style="yellow")
             elif item.installed:
                 status = Text("● 已安装", style="yellow")
-                capability = Text("仅检测，尚未接入", style="yellow")
+                launch = Text(item.detail, style="yellow")
+                capability = Text(
+                    "已接入但不可选择" if item.supported else "尚未接入",
+                    style="yellow",
+                )
             else:
                 status = Text("○ 未安装", style="dim")
+                launch = Text("—", style="dim")
                 capability = Text("—", style="dim")
             executable = str(item.executable) if item.executable else "—"
-            table.add_row(item.label, status, capability, Text(executable, style="dim"))
+            table.add_row(
+                item.label, status, launch, capability, Text(executable, style="dim")
+            )
         self.query_one("#coding-agent-catalog", Static).update(
             Panel(
                 table,
                 title="[bold cyan]本机 Agent[/]",
-                subtitle="[dim]检测来源：PATH（不会启动外部程序）[/]",
+                subtitle="[dim]检测来源：PATH + 受限版本探测（最长 5 秒）[/]",
                 border_style="blue",
                 padding=(0, 1),
             )
@@ -145,7 +155,12 @@ class CodingAgentSettingsPane(VerticalScroll):
         self._busy = True
         save = self.query_one("#coding-agent-save", Button)
         try:
-            self._catalog = discover_coding_agents()
+            discover = getattr(self.app, "discover_inline_coding_agents", None)
+            self._catalog = (
+                await discover()
+                if callable(discover)
+                else discover_coding_agents()
+            )
             self._render_catalog()
             current = await self.app.read_inline_coding_agent()
             available = {item.key for item in self._catalog if item.usable}
@@ -162,7 +177,10 @@ class CodingAgentSettingsPane(VerticalScroll):
                         (current_label, "bold"),
                     )
                 )
-                message = "选择其他可用 Agent 后保存，将安全重建工作流运行时。"
+                message = (
+                    "当前 Agent 已通过启动检查；登录和执行权限将在任务启动时校验。"
+                    "选择其他可选 Agent 后保存，将安全重建工作流运行时。"
+                )
             else:
                 select.clear()
                 save.disabled = True

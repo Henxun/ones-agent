@@ -18,7 +18,11 @@ from textual.widgets import Button
 from .controller import TuiController
 from ..setup_models import OnesProbePublicConfig
 from ..setup_controller import InlineValidationError
-from ..coding_agents import discover_coding_agents
+from ..coding_agents import (
+    CodingAgentInstallation,
+    probe_coding_agent,
+    discover_coding_agents,
+)
 from .models import RunActivity
 from .screens import DashboardScreen, HelpScreen, SettingsView
 from .runtime_session import TuiRuntimeSession
@@ -119,6 +123,7 @@ class DeveloperWorkflowTuiApp(App[None]):
             and configured_builder is not runtime_bootstrapper
         ):
             raise ValueError("TUI bootstrap configuration is invalid")
+        self._runtime_bootstrapper = runtime_bootstrapper or configured_builder
         self._setup_import = setup_import
         self.runtime_session: TuiRuntimeSession | None = None
         self.controller: TuiController | None = None
@@ -705,8 +710,41 @@ class DeveloperWorkflowTuiApp(App[None]):
         finally:
             await controller.aclose()
 
+    async def discover_inline_coding_agents(
+        self,
+    ) -> tuple[CodingAgentInstallation, ...]:
+        """Probe with the same Codex cache/preparer used by the active runtime."""
+
+        builder = self._runtime_bootstrapper
+        preparer = getattr(builder, "codex_runtime_preparer", None)
+
+        def probe(key, executable):
+            if key != "codex":
+                return probe_coding_agent(key, executable)
+            prepare = getattr(preparer, "prepare_verified", None)
+            if not callable(prepare):
+                # A direct/injected controller has no production runtime boundary;
+                # do not claim Codex launchability using a different cache root.
+                from ..coding_agents import CodingAgentProbeResult
+
+                return CodingAgentProbeResult(
+                    False, diagnostic="当前运行时无法执行一致的 Codex 启动检查"
+                )
+            from ..codex_runner import resolve_codex_command
+
+            return probe_coding_agent(
+                key,
+                executable,
+                codex_command_resolver=lambda: resolve_codex_command(
+                    _prepare=prepare
+                ),
+            )
+
+        return await asyncio.to_thread(discover_coding_agents, probe=probe)
+
     async def save_inline_coding_agent(self, coding_agent: str) -> None:
-        available = {item.key for item in discover_coding_agents() if item.usable}
+        catalog = await self.discover_inline_coding_agents()
+        available = {item.key for item in catalog if item.usable}
         if coding_agent not in available:
             raise RuntimeError("selected coding agent is unavailable")
         if self.runtime_session is None:

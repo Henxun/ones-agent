@@ -51,6 +51,26 @@ class FakeAsyncClient:
         self.detail_calls.append(issue_id)
         return {"uuid": issue_id, "name": "fallback"}
 
+    async def fetch_issue_types(self) -> list[dict]:
+        return [
+            {"uuid": "requirement-type", "name": "需求"},
+            {"uuid": "task-type", "name": "任务"},
+        ]
+
+    async def fetch_issue_type_configs(self, project_id: str) -> list[dict]:
+        return [
+            {
+                "project_uuid": project_id,
+                "issue_type_uuid": "requirement-type",
+                "name": "产品需求",
+            },
+            {
+                "scope": project_id,
+                "issue_type_uuid": "task-type",
+                "name": "任务",
+            },
+        ]
+
 
 class FakeSyncClient:
     def __init__(self, mine_results: dict[str | None, list[dict]] | None = None, defects_results: dict[str | None, list[dict]] | None = None):
@@ -101,6 +121,16 @@ class RaisingSyncClient(FakeSyncClient):
 
 
 class TestOnesGatewayAsync(unittest.IsolatedAsyncioTestCase):
+    async def test_list_project_issue_types_uses_project_configs_and_names(self):
+        gateway = OnesGateway(async_client=FakeAsyncClient())
+
+        issue_types = await gateway.list_project_issue_types("project-1")
+
+        self.assertEqual(
+            [(item.id, item.name) for item in issue_types],
+            [("requirement-type", "产品需求"), ("task-type", "任务")],
+        )
+
     async def test_list_defects_maps_async_pagination_failure_to_safe_payload_error(self):
         class RecordingPaginationClient(FakeAsyncClient):
             async def fetch_defects(self, **kwargs) -> list[dict]:
