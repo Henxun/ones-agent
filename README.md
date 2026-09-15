@@ -63,3 +63,11 @@ uv run ones-dev defect --project <project> --iteration <iteration> --assignee <a
 网页前端已移除，无需 Node.js 或前端构建。HTTP 服务保留 `/docs`、`/redoc` 和 `/openapi.json` API 文档；根路径及原网页路由返回 404。
 
 开发工作流说明见 [docs/ones_dev_cli.md](docs/ones_dev_cli.md)。
+
+## 开发规范
+
+开发前请阅读 [贡献指南](CONTRIBUTING.md)，并遵循：
+
+- [代码规范](docs/code_standards.md)
+- [架构规范](docs/architecture_standards.md)
+- [Git 工作流规范](docs/git_workflow.md)
