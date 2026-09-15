@@ -16,6 +16,8 @@ from src.developer_workflow.repository import MirrorOriginMismatch, WorktreeRepo
 from src.developer_workflow.repository_group import (
     RepositoryGroupError,
     RepositoryGroupWorkspace,
+    RepositoryPreparationProgress,
+    preparation_activity_message,
     repository_branch,
 )
 
@@ -136,6 +138,44 @@ def test_group_prepare_uses_local_sources_without_mutating_them(
     assert prepared[0].prepared.path.name == "shared-sdk"
     assert prepared[1].prepared.path.name == "desktop-app"
     assert {key: _source_facts(source) for key, source in sources.items()} == before
+
+
+def test_group_prepare_reports_each_repository_milestone(
+    tmp_path: Path,
+    repository_group: tuple[RepositoryGroupMapping, dict[str, Path]],
+) -> None:
+    group, _ = repository_group
+    workspace = RepositoryGroupWorkspace(
+        WorktreeRepository(tmp_path / "mirrors", tmp_path / "worktrees")
+    )
+    progress: list[RepositoryPreparationProgress] = []
+
+    workspace.prepare_group(
+        "run-progress",
+        group,
+        WorkflowType.DEFECT,
+        "DEF-1",
+        "visible preparation",
+        progress=progress.append,
+    )
+
+    assert [
+        (item.repository_key, item.index, item.total, item.stage)
+        for item in progress
+    ] == [
+        ("shared-sdk", 1, 2, "checking"),
+        ("shared-sdk", 1, 2, "preparing"),
+        ("shared-sdk", 1, 2, "ready"),
+        ("desktop-app", 2, 2, "checking"),
+        ("desktop-app", 2, 2, "preparing"),
+        ("desktop-app", 2, 2, "ready"),
+    ]
+    assert preparation_activity_message(progress[0]) == (
+        "Repository setup 1/2 · shared-sdk · checking existing isolated worktree"
+    )
+    assert preparation_activity_message(progress[-1]).startswith(
+        "Repository setup 2/2 · desktop-app · ready ("
+    )
 
 
 def test_group_prepare_recovers_exact_existing_worktrees(

@@ -62,7 +62,12 @@ from .group_evidence import (
     assert_group_snapshots_equal,
     run_group_commands,
 )
-from .repository_group import PreparedRepository, RepositoryGroupWorkspace
+from .repository_group import (
+    PreparedRepository,
+    RepositoryGroupWorkspace,
+    RepositoryPreparationProgress,
+    preparation_activity_message,
+)
 from .repository import (
     RepositoryBoundaryError,
     RemoteBaseChangedError,
@@ -73,6 +78,7 @@ from .repository import (
 from .requirement_flow import (
     ConfiguredTestRunner,
     RequirementCodingAgent,
+    _record_workflow_activity,
     _split_configured_command,
 )
 from .state_store import ConcurrentRunUpdateError
@@ -1437,14 +1443,42 @@ class DefectFlow:
         mapping = self._mapping(run)
         prepared = run.prepared_worktree
         if prepared is None:
+            started = time.perf_counter()
+            _record_workflow_activity(
+                self.coding_agent,
+                run.run_id,
+                preparation_activity_message(
+                    RepositoryPreparationProgress(mapping.key, 1, 1, "checking")
+                ),
+            )
             defect = self._defect(run)
             branch = build_run_branch_name(
                 "defect", run.work_item_id, defect.title, run.run_id
             )
             prepared = self.repository.recover(run.run_id, mapping, branch)
             if prepared is None:
+                _record_workflow_activity(
+                    self.coding_agent,
+                    run.run_id,
+                    preparation_activity_message(
+                        RepositoryPreparationProgress(mapping.key, 1, 1, "preparing")
+                    ),
+                )
                 prepared = self.repository.prepare(run.run_id, mapping, branch)
             self.repository.assert_head_unchanged(prepared)
+            _record_workflow_activity(
+                self.coding_agent,
+                run.run_id,
+                preparation_activity_message(
+                    RepositoryPreparationProgress(
+                        mapping.key,
+                        1,
+                        1,
+                        "ready",
+                        max(0.0, time.perf_counter() - started),
+                    )
+                ),
+            )
             run = self._save(
                 run.validated_update(
                     prepared_worktree=prepared,
@@ -1467,6 +1501,9 @@ class DefectFlow:
                 WorkflowType.DEFECT,
                 run.work_item_id,
                 defect.title,
+                progress=lambda item: _record_workflow_activity(
+                    self.coding_agent, run.run_id, preparation_activity_message(item)
+                ),
             )
             workspace.assert_heads_unchanged(prepared)
             evidence = tuple(

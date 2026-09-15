@@ -47,6 +47,7 @@ from src.developer_workflow.tui.models import (
     RunSummary,
     ReviewView,
     TestView as TuiTestView,
+    WorkspaceSummary,
     safe_tui_text,
 )
 from src.developer_workflow.tui.screens import (
@@ -64,10 +65,35 @@ from src.developer_workflow.tui.screens import (
     RunFilterScreen,
     RevisionModal,
     SettingsView,
+    _ai_activity_renderable,
 )
 
 
 NOW = datetime(2026, 8, 11, 9, 0, tzinfo=UTC)
+
+
+def test_repository_preparation_activity_has_distinct_heading_and_progress() -> None:
+    rendered = _ai_activity_renderable(
+        (
+            "Repository setup 1/2 · camera-sdk · syncing mirror and creating worktree",
+            "Repository setup 1/2 · camera-sdk · ready (12.4s)",
+        )
+    )
+
+    assert rendered.plain.startswith("WORKSPACE PREPARATION\n")
+    assert "Repository setup 1/2" in rendered.plain
+    assert "ready (12.4s)" in rendered.plain
+
+
+def test_repository_preparation_heading_switches_when_analysis_starts() -> None:
+    rendered = _ai_activity_renderable(
+        (
+            "Repository setup 1/1 · app · ready (1.2s)",
+            "Codex session started",
+        )
+    )
+
+    assert rendered.plain.startswith("AI ANALYSIS\n")
 
 
 def _plain(widget) -> str:
@@ -1415,8 +1441,6 @@ async def test_defect_wizard_uses_only_status_ids_and_confirms_mapping() -> None
         assert not pilot.app.screen.query("#mapping-key")
         await pilot.click("#mapping-0")
         await pilot.pause()
-        await pilot.click("#confirm-start")
-        await pilot.pause()
 
         assert controller.confirmed_mapping == "app-group"
         assert controller.mutation_calls[-1] == (
@@ -1486,14 +1510,7 @@ async def test_confirmed_defect_displays_live_analysis_progress() -> None:
             if pilot.app.screen.query("#mapping-0"):
                 break
         assert pilot.app.screen.query("#mapping-0")
-        await pilot.click("#mapping-0")
-        for _ in range(100):
-            await pilot.pause()
-            if pilot.app.screen.query("#confirm-start"):
-                break
-        assert pilot.app.screen.query("#confirm-start")
-
-        click = asyncio.create_task(pilot.click("#confirm-start"))
+        click = asyncio.create_task(pilot.click("#mapping-0"))
         try:
             for _ in range(100):
                 await pilot.pause()
@@ -1549,6 +1566,74 @@ async def test_defect_candidate_offers_read_only_analysis_and_repair_actions() -
             ("analyze_defect", "PRIVATE-CANDIDATE-CAPABILITY", "defect-1")
         ]
         assert pilot.app.screen.query_one("#mapping-0")
+
+
+@pytest.mark.asyncio
+async def test_workspace_defect_uses_its_mapping_without_reselecting_workspace() -> None:
+    controller = WizardController()
+    workspace = WorkspaceSummary(
+        "app-group", "project-id", "iteration-id", ("primary", "dependency")
+    )
+    async with wizard_app_factory(controller).run_test(size=(120, 32)) as pilot:
+        pilot.app.push_screen(
+            DefectWizardScreen(
+                controller,
+                pilot.app.supervisor,
+                workspace=workspace,
+                candidate_session_id="PRIVATE-CANDIDATE-CAPABILITY",
+                candidates=(
+                    DefectChoice(
+                        "defect-1", "Qt lifecycle defect", "todo-id", "normal"
+                    ),
+                ),
+                selected_candidate=0,
+            )
+        )
+        await pilot.pause()
+
+        assert not any(
+            (button.id or "").startswith("mapping-")
+            for button in pilot.app.screen.query(Button)
+        )
+        assert controller.mutation_calls == [
+            ("start_defect", "PRIVATE-CANDIDATE-CAPABILITY", "defect-1"),
+            ("confirm_repository", "run-defect-1", "app-group", 1),
+        ]
+
+
+@pytest.mark.asyncio
+async def test_workspace_defect_does_not_offer_other_workspace_mappings() -> None:
+    controller = WizardController()
+    workspace = WorkspaceSummary(
+        "removed-workspace", "project-id", "iteration-id", ("primary",)
+    )
+    async with wizard_app_factory(controller).run_test(size=(120, 32)) as pilot:
+        pilot.app.push_screen(
+            DefectWizardScreen(
+                controller,
+                pilot.app.supervisor,
+                workspace=workspace,
+                candidate_session_id="PRIVATE-CANDIDATE-CAPABILITY",
+                candidates=(
+                    DefectChoice(
+                        "defect-1", "Qt lifecycle defect", "todo-id", "normal"
+                    ),
+                ),
+                selected_candidate=0,
+            )
+        )
+        await pilot.pause()
+
+        assert _plain(pilot.app.screen.query_one("#wizard-notice")) == (
+            "当前工作区已不在授权映射中，请返回工作区刷新配置后重试"
+        )
+        assert not any(
+            (button.id or "").startswith("mapping-")
+            for button in pilot.app.screen.query(Button)
+        )
+        assert not any(
+            call[0] == "confirm_repository" for call in controller.mutation_calls
+        )
 
 
 @pytest.mark.asyncio
@@ -1623,13 +1708,13 @@ async def test_no_authorized_mapping_candidate_fails_closed() -> None:
 @pytest.mark.asyncio
 async def test_unlisted_mapping_and_authoritative_drift_fail_closed() -> None:
     controller = WizardController()
-    async with wizard_app_factory(controller).run_test() as pilot:
+    async with wizard_app_factory(controller).run_test(size=(120, 32)) as pilot:
         await _open_defect_wizard(pilot)
         await _query_defects(pilot)
         await pilot.click("#candidate-0")
         await pilot.pause()
         screen = pilot.app.screen
-        await screen._show_confirmation(99)  # type: ignore[attr-defined]
+        await screen._select_mapping(99)  # type: ignore[attr-defined]
         assert _plain(screen.query_one("#wizard-notice")) == (
             "repository mapping selection is invalid"
         )
@@ -1637,10 +1722,8 @@ async def test_unlisted_mapping_and_authoritative_drift_fail_closed() -> None:
             call[0] == "confirm_repository" for call in controller.mutation_calls
         )
 
-        await pilot.click("#mapping-0")
-        await pilot.pause()
         controller.fail_confirm = True
-        await pilot.click("#confirm-start")
+        await pilot.click("#mapping-0")
         await pilot.pause()
         notice = _plain(pilot.app.screen.query_one("#wizard-notice"))
         assert notice == "workflow wizard action failed safely"
@@ -1654,7 +1737,7 @@ async def test_unlisted_mapping_and_authoritative_drift_fail_closed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_requirement_wizard_reuses_mapping_and_confirmation() -> None:
+async def test_requirement_wizard_starts_after_mapping_selection() -> None:
     controller = WizardController()
     controller.mapping_candidates = (_candidate("group-app", group=True),)
     async with wizard_app_factory(controller).run_test(size=(60, 24)) as pilot:
@@ -1672,8 +1755,6 @@ async def test_requirement_wizard_reuses_mapping_and_confirmation() -> None:
         assert "1 configured integration test command" in summary
         assert "changes use an isolated managed worktree" in summary
         await pilot.click("#mapping-0")
-        await pilot.pause()
-        await pilot.click("#confirm-start")
         await pilot.pause()
 
         assert controller.mutation_calls == [

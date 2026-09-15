@@ -2798,3 +2798,16 @@ def test_codex_activity_is_persisted_as_a_bounded_sanitized_trace(
         "Running: rg -n defect src",
         "Command completed: rg (exit 0)",
     )
+
+
+def test_workflow_activity_is_visible_before_agent_invocation(tmp_path: Path) -> None:
+    runner = _runner(tmp_path, FakeExecutor())
+
+    runner.record_workflow_activity(
+        "preparation-run",
+        "Repository setup 1/2 · camera-sdk · syncing mirror and creating worktree",
+    )
+
+    assert runner.activity("preparation-run") == (
+        "Repository setup 1/2 · camera-sdk · syncing mirror and creating worktree",
+    )

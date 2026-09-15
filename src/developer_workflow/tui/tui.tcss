@@ -773,6 +773,110 @@ DefectStatusFilterScreen {
     width: 1fr;
 }
 
+#defect-wizard-screen,
+#requirement-wizard-screen {
+    layout: vertical;
+    width: 100%;
+    height: 100%;
+    background: $background;
+}
+
+#wizard-body {
+    width: 100%;
+    height: 1fr;
+    padding: 0 2;
+}
+
+#wizard-footer {
+    width: 100%;
+    height: 3;
+    padding: 0 2;
+    background: $background;
+    border-top: solid $panel;
+    align-vertical: middle;
+}
+
+#wizard-notice {
+    width: 1fr;
+    height: auto;
+    color: $warning;
+}
+
+#cancel-wizard {
+    width: 14;
+    height: 3;
+    margin-left: 1;
+}
+
+.wizard-step-header,
+.wizard-empty-card {
+    width: 100%;
+    height: auto;
+    padding: 1 2;
+    margin-bottom: 1;
+    border: round $primary;
+    background: $surface;
+}
+
+.wizard-empty-card.warning { border: round $warning; }
+.wizard-step-title {
+    width: 100%;
+    height: auto;
+    color: $accent;
+    text-style: bold;
+}
+.wizard-step-description {
+    width: 100%;
+    height: auto;
+    margin-top: 1;
+    color: $text-muted;
+}
+.wizard-step-count {
+    width: 100%;
+    height: auto;
+    margin-top: 1;
+    color: $warning;
+    text-style: bold;
+}
+
+.mapping-option-card {
+    width: 100%;
+    height: auto;
+    min-height: 10;
+    margin-bottom: 1;
+    padding: 1 2;
+    border: round $panel-lighten-2;
+    background: $surface;
+    align-vertical: middle;
+}
+.mapping-option-card:hover {
+    border: round $accent;
+    background: $boost;
+}
+.mapping-option-content { width: 1fr; height: auto; }
+.mapping-option-title {
+    width: 100%;
+    height: auto;
+    color: $accent;
+    text-style: bold;
+}
+.mapping-option-kind {
+    width: 100%;
+    height: auto;
+    color: $warning;
+}
+.mapping-option-detail {
+    width: 100%;
+    height: auto;
+    margin-top: 1;
+    color: $text-muted;
+}
+.mapping-option-action {
+    width: 12;
+    height: 3;
+    margin-left: 2;
+}
+
 #run-list-pane {
     width: 34;
     height: 100%;

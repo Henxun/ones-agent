@@ -1102,7 +1102,9 @@ def test_defect_group_runs_focused_reproduction_in_owning_repository(
         phase = "base"
         review_test = False
 
-        def prepare_group(self, *args: object) -> tuple[PreparedRepository, ...]:
+        def prepare_group(
+            self, *args: object, **kwargs: object
+        ) -> tuple[PreparedRepository, ...]:
             return prepared
 
         def assert_heads_unchanged(self, items: tuple[PreparedRepository, ...]) -> None:

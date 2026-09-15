@@ -98,6 +98,8 @@ class CodingAgentRunner(Protocol):
 
     def activity(self, run_id: str, *, limit: int = 40) -> tuple[str, ...]: ...
 
+    def record_workflow_activity(self, run_id: str, message: str) -> None: ...
+
 
 __all__ = [
     "CapabilityAwareCodingAgentRunner",

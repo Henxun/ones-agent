@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
+from typing import Callable, Literal
 
 from .contracts import (
     ApprovalPackage,
@@ -31,6 +33,34 @@ class PreparedRepository:
     repository_key: str
     mapping: RepositoryMapping
     prepared: PreparedWorktree
+
+
+@dataclass(frozen=True, slots=True)
+class RepositoryPreparationProgress:
+    """One bounded, display-safe repository preparation milestone."""
+
+    repository_key: str
+    index: int
+    total: int
+    stage: Literal["checking", "preparing", "ready"]
+    elapsed_seconds: float = 0.0
+
+
+RepositoryPreparationSink = Callable[[RepositoryPreparationProgress], None]
+
+
+def preparation_activity_message(progress: RepositoryPreparationProgress) -> str:
+    """Render a compact activity line shared by defect and requirement flows."""
+
+    prefix = (
+        f"Repository setup {progress.index}/{progress.total} · "
+        f"{progress.repository_key} · "
+    )
+    if progress.stage == "checking":
+        return prefix + "checking existing isolated worktree"
+    if progress.stage == "preparing":
+        return prefix + "syncing mirror and creating worktree"
+    return prefix + f"ready ({progress.elapsed_seconds:.1f}s)"
 
 
 def repository_branch(
@@ -70,10 +100,17 @@ class RepositoryGroupWorkspace:
         workflow_type: WorkflowType | str,
         work_item_id: str,
         title: str,
+        *,
+        progress: RepositoryPreparationSink | None = None,
     ) -> tuple[PreparedRepository, ...]:
         mappings = {item.key: item for item in group.repositories}
         prepared: list[PreparedRepository] = []
-        for key in group.topological_keys():
+        keys = group.topological_keys()
+        total = len(keys)
+        for index, key in enumerate(keys, 1):
+            started = perf_counter()
+            if progress is not None:
+                progress(RepositoryPreparationProgress(key, index, total, "checking"))
             mapping = mappings[key]
             branch = repository_branch(
                 workflow_type, work_item_id, title, key, run_id
@@ -82,10 +119,26 @@ class RepositoryGroupWorkspace:
                 run_id, mapping, branch, repository_key=key
             )
             if worktree is None:
+                if progress is not None:
+                    progress(
+                        RepositoryPreparationProgress(
+                            key, index, total, "preparing"
+                        )
+                    )
                 worktree = self.repository.prepare(
                     run_id, mapping, branch, repository_key=key
                 )
             prepared.append(PreparedRepository(key, mapping, worktree))
+            if progress is not None:
+                progress(
+                    RepositoryPreparationProgress(
+                        key,
+                        index,
+                        total,
+                        "ready",
+                        max(0.0, perf_counter() - started),
+                    )
+                )
         result = tuple(prepared)
         self._assert_sibling_layout(result)
         return result
@@ -190,6 +243,9 @@ class RepositoryGroupWorkspace:
 
 __all__ = [
     "PreparedRepository",
+    "RepositoryPreparationProgress",
+    "RepositoryPreparationSink",
+    "preparation_activity_message",
     "RepositoryGroupError",
     "RepositoryGroupWorkspace",
     "repository_branch",

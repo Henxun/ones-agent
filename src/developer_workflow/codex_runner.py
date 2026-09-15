@@ -2236,6 +2236,20 @@ class GuardedCodingAgentRunner(ABC):
         except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
             return ()
 
+    def record_workflow_activity(self, run_id: str, message: str) -> None:
+        """Record sanitized workflow setup progress before the agent process starts."""
+
+        if (
+            not _RUN_ID.fullmatch(run_id)
+            or run_id in {".", ".."}
+            or type(message) is not str
+            or not message
+            or len(message) > 512
+        ):
+            return
+        run_directory = self._prepare_run_directory(run_id)
+        self._record_activity(run_directory, "workflow", message)
+
     def _record_activity(self, run_directory: Path, kind: str, message: str) -> None:
         if (
             re.fullmatch(r"[a-z]{1,24}", kind) is None

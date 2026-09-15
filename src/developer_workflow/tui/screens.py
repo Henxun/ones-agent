@@ -169,14 +169,33 @@ def _ai_activity_renderable(activity: tuple[str, ...]) -> Text:
     """Build a readable, styled activity stream from sanitized runtime events."""
 
     rendered = Text()
-    rendered.append("AI ANALYSIS\n", style="bold cyan")
+    analysis_started = any(
+        line.startswith(("AI analysis", "Running: ", "Analysis result: "))
+        or line.endswith(" session started")
+        for line in activity
+    )
     rendered.append(
-        "Live repository investigation and reasoning\n\n",
+        "AI ANALYSIS\n" if analysis_started else "WORKSPACE PREPARATION\n",
+        style="bold cyan",
+    )
+    rendered.append(
+        (
+            "Live repository investigation and reasoning\n\n"
+            if analysis_started
+            else "Preparing isolated repositories before the coding agent starts\n\n"
+        ),
         style="dim",
     )
     for event in activity:
         line = event.strip()
-        if line.startswith("Running: "):
+        if line.startswith("Repository setup "):
+            ready = " · ready (" in line
+            rendered.append(
+                "✓ " if ready else "● ",
+                style="bold green" if ready else "bold blue",
+            )
+            rendered.append(line, style="green" if ready else "cyan")
+        elif line.startswith("Running: "):
             command = _compact_activity_command(line.removeprefix("Running: "))
             rendered.append("› ", style="bold cyan")
             rendered.append("Running: ", style="bold cyan")
@@ -780,7 +799,6 @@ class _MappingWizardScreen(Screen[RunDetail | None]):
     STEP_FILTER = 0
     STEP_CANDIDATE = 1
     STEP_MAPPING = 2
-    STEP_CONFIRM = 3
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", priority=True),
     ]
@@ -791,21 +809,23 @@ class _MappingWizardScreen(Screen[RunDetail | None]):
         supervisor: RunTaskSupervisor,
         *,
         screen_id: str,
+        preferred_mapping_key: str = "",
     ) -> None:
         super().__init__(id=screen_id)
         self._controller = controller
         self._supervisor = supervisor
         self._preview: RunDetail | None = None
-        self._mapping_key = ""
         self._mapping_candidates: tuple[MappingCandidateView, ...] = ()
+        self._preferred_mapping_key = preferred_mapping_key
         self._step = self.STEP_FILTER
-        self._confirmation_task: asyncio.Task[None] | None = None
+        self._mapping_task: asyncio.Task[None] | None = None
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="wizard-body"):
             yield from self._initial_widgets()
-        yield Static("", id="wizard-notice", markup=False)
-        yield Button("Cancel", id="cancel-wizard")
+        with Horizontal(id="wizard-footer"):
+            yield Static("", id="wizard-notice", markup=False)
+            yield Button("取消", id="cancel-wizard")
 
     def _initial_widgets(self) -> tuple[Widget, ...]:
         raise NotImplementedError
@@ -821,25 +841,92 @@ class _MappingWizardScreen(Screen[RunDetail | None]):
         await body.remove_children()
         if not self._mapping_candidates:
             self._show_notice(_NO_MAPPINGS)
-            await body.mount(Label("No authorized repository mappings"))
+            await body.mount(
+                Vertical(
+                    Static("代码工作区不可用", classes="wizard-step-title"),
+                    Static(
+                        "当前任务没有可用的授权仓库映射，请返回检查工作区配置。",
+                        classes="wizard-step-description",
+                    ),
+                    classes="wizard-empty-card",
+                )
+            )
+            return
+        if self._preferred_mapping_key:
+            selected = next(
+                (
+                    index
+                    for index, candidate in enumerate(self._mapping_candidates)
+                    if candidate.key == self._preferred_mapping_key
+                ),
+                None,
+            )
+            if selected is None:
+                self._show_notice(
+                    "当前工作区已不在授权映射中，请返回工作区刷新配置后重试"
+                )
+                await body.mount(
+                    Vertical(
+                        Static("当前工作区映射不可用", classes="wizard-step-title"),
+                        Static(
+                            "工作区配置可能已发生变化。为避免在错误仓库中执行，本次不会改选其他工作区。",
+                            classes="wizard-step-description",
+                        ),
+                        classes="wizard-empty-card warning",
+                    )
+                )
+                return
+            await self._select_mapping(selected)
             return
         self._show_notice("")
-        await body.mount(Label("Select an authorized repository mapping"))
-        for index, candidate in enumerate(self._mapping_candidates):
-            await body.mount(
-                Button(
-                    f"Select {candidate.key}",
-                    id=f"mapping-{index}",
-                    variant="primary",
+        await body.mount(
+            Vertical(
+                Static("选择代码工作区", classes="wizard-step-title"),
+                Static(
+                    "请选择本次任务要使用的授权仓库范围。点击“选择并启动”后将立即进入既有工作流。",
+                    classes="wizard-step-description",
                 ),
                 Static(
-                    _mapping_candidate_text(candidate),
-                    id=f"mapping-candidate-{index}",
-                    markup=True,
+                    f"可用工作区  {len(self._mapping_candidates)}",
+                    classes="wizard-step-count",
+                ),
+                classes="wizard-step-header",
+            )
+        )
+        for index, candidate in enumerate(self._mapping_candidates):
+            await body.mount(
+                Horizontal(
+                    Vertical(
+                        Static(
+                            candidate.key,
+                            markup=False,
+                            classes="mapping-option-title",
+                        ),
+                        Static(
+                            "仓库组"
+                            if candidate.kind == "repository-group"
+                            else "单仓库",
+                            classes="mapping-option-kind",
+                        ),
+                        Static(
+                            _mapping_candidate_text(candidate),
+                            id=f"mapping-candidate-{index}",
+                            markup=False,
+                            classes="mapping-option-detail",
+                        ),
+                        classes="mapping-option-content",
+                    ),
+                    Button(
+                        "选择并启动",
+                        id=f"mapping-{index}",
+                        variant="primary",
+                        classes="mapping-option-action",
+                    ),
+                    classes="mapping-option-card",
                 ),
             )
 
-    async def _show_confirmation(self, index: int) -> None:
+    async def _select_mapping(self, index: int) -> None:
         preview = self._preview
         if (
             preview is None
@@ -849,32 +936,7 @@ class _MappingWizardScreen(Screen[RunDetail | None]):
             self._show_notice(_MAPPING_REQUIRED)
             return
         candidate = self._mapping_candidates[index]
-        self._mapping_key = candidate.key
-        self._step = self.STEP_CONFIRM
         self._show_notice("")
-        body = self.query_one("#wizard-body", VerticalScroll)
-        await body.remove_children()
-        await body.mount(
-            Label("Confirm workflow"),
-            Button("Confirm", id="confirm-start", variant="success"),
-            Static(
-                "\n".join(
-                    (
-                        f"work item: {preview.summary.work_item_id}",
-                        _mapping_candidate_text(candidate),
-                        f"state: {preview.summary.state.value}",
-                    )
-                ),
-                id="workflow-summary",
-                markup=True,
-            ),
-        )
-
-    async def _confirm(self) -> None:
-        preview = self._preview
-        if preview is None or not self._mapping_key:
-            self._show_notice(_WIZARD_UNAVAILABLE)
-            return
         body = self.query_one("#wizard-body", VerticalScroll)
         await body.remove_children()
         running_detail = RunDetailPane(
@@ -887,7 +949,7 @@ class _MappingWizardScreen(Screen[RunDetail | None]):
             "confirm-repository",
             lambda: self._controller.confirm_repository(
                 preview.summary.run_id,
-                self._mapping_key,
+                candidate.key,
                 preview.summary.version,
             ),
         )
@@ -895,12 +957,12 @@ class _MappingWizardScreen(Screen[RunDetail | None]):
         # Do not await the workflow from the button handler.  Textual may defer
         # painting widget changes until that handler returns, which made the
         # confirmation page appear frozen for the whole coding-agent run.
-        self._confirmation_task = asyncio.create_task(
-            self._finish_confirmation(task, preview),
-            name=f"tui-confirm-{preview.summary.run_id}",
+        self._mapping_task = asyncio.create_task(
+            self._finish_mapping_start(task, preview),
+            name=f"tui-start-mapping-{preview.summary.run_id}",
         )
 
-    async def _finish_confirmation(
+    async def _finish_mapping_start(
         self, task: asyncio.Task[RunDetail], preview: RunDetail
     ) -> None:
 
@@ -958,9 +1020,7 @@ class _MappingWizardScreen(Screen[RunDetail | None]):
             except ValueError:
                 self._show_notice(_MAPPING_REQUIRED)
                 return
-            await self._show_confirmation(index)
-        elif button_id == "confirm-start" and self._step == self.STEP_CONFIRM:
-            await self._confirm()
+            await self._select_mapping(index)
 
 
 class DefectWizardScreen(_MappingWizardScreen):
@@ -981,6 +1041,7 @@ class DefectWizardScreen(_MappingWizardScreen):
             controller,
             supervisor,
             screen_id="defect-wizard-screen",
+            preferred_mapping_key=workspace.key if workspace is not None else "",
         )
         self._candidate_session_id = candidate_session_id
         self._candidates = candidates
@@ -1241,6 +1302,7 @@ class RequirementWizardScreen(_MappingWizardScreen):
             controller,
             supervisor,
             screen_id="requirement-wizard-screen",
+            preferred_mapping_key=workspace.key if workspace is not None else "",
         )
         self._requirement_session_id = candidate_session_id
         self._requirements = candidates

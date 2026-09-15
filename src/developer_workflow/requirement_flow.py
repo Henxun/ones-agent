@@ -65,7 +65,12 @@ from .contracts import (
     WorkflowType,
 )
 from .repository import build_run_branch_name
-from .repository_group import PreparedRepository, RepositoryGroupWorkspace
+from .repository_group import (
+    PreparedRepository,
+    RepositoryGroupWorkspace,
+    RepositoryPreparationProgress,
+    preparation_activity_message,
+)
 from .group_evidence import (
     GroupEvidenceError,
     assert_group_claims,
@@ -183,6 +188,8 @@ class PreflightAnalyzer(Protocol):
 
 
 class RequirementCodingAgent(PreflightAnalyzer, Protocol):
+    def record_workflow_activity(self, run_id: str, message: str) -> None: ...
+
     def analyze_testing(self, *, run_id: str, prompt: str) -> CodingAgentResult: ...
 
     def run_stage(
@@ -206,6 +213,16 @@ class RequirementCodingAgent(PreflightAnalyzer, Protocol):
         prompt: str,
         allow_changes: bool,
     ) -> CodingAgentResult: ...
+
+
+def _record_workflow_activity(
+    coding_agent: object, run_id: str, message: str
+) -> None:
+    """Emit optional setup activity without breaking legacy/test adapters."""
+
+    recorder = getattr(coding_agent, "record_workflow_activity", None)
+    if callable(recorder):
+        recorder(run_id, message)
 
 
 # Compatibility alias for existing integrations and persisted documentation.
@@ -358,6 +375,11 @@ class CodingAgentRequirementAdapter:
         """Expose the runner's sanitized observable activity to the TUI."""
 
         return self.runner.activity(run_id, limit=limit)
+
+    def record_workflow_activity(self, run_id: str, message: str) -> None:
+        """Expose provider-neutral workflow progress through the activity stream."""
+
+        self.runner.record_workflow_activity(run_id, message)
 
     def preflight(
         self,
@@ -1867,14 +1889,42 @@ class RequirementFlow:
         mapping = self._mapping(run)
         prepared = run.prepared_worktree
         if prepared is None:
+            started = time.perf_counter()
+            _record_workflow_activity(
+                self.coding_agent,
+                run.run_id,
+                preparation_activity_message(
+                    RepositoryPreparationProgress(mapping.key, 1, 1, "checking")
+                ),
+            )
             requirement = self._requirement(run)
             branch = build_run_branch_name(
                 "requirement", run.work_item_id, requirement.title, run.run_id
             )
             prepared = self.repository.recover(run.run_id, mapping, branch)
             if prepared is None:
+                _record_workflow_activity(
+                    self.coding_agent,
+                    run.run_id,
+                    preparation_activity_message(
+                        RepositoryPreparationProgress(mapping.key, 1, 1, "preparing")
+                    ),
+                )
                 prepared = self.repository.prepare(run.run_id, mapping, branch)
             self.repository.assert_head_unchanged(prepared)
+            _record_workflow_activity(
+                self.coding_agent,
+                run.run_id,
+                preparation_activity_message(
+                    RepositoryPreparationProgress(
+                        mapping.key,
+                        1,
+                        1,
+                        "ready",
+                        max(0.0, time.perf_counter() - started),
+                    )
+                ),
+            )
             run = self._save(
                 run.validated_update(
                     prepared_worktree=prepared,
@@ -1897,6 +1947,9 @@ class RequirementFlow:
                 WorkflowType.REQUIREMENT,
                 run.work_item_id,
                 requirement.title,
+                progress=lambda item: _record_workflow_activity(
+                    self.coding_agent, run.run_id, preparation_activity_message(item)
+                ),
             )
             evidence = tuple(
                 RepositoryRunEvidence(

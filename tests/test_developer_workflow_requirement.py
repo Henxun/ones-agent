@@ -548,7 +548,9 @@ def test_repository_group_runs_all_tests_and_persists_each_snapshot(
     criteria = extract_acceptance_criteria(_wiki().normalized_content)
 
     class GroupWorkspace:
-        def prepare_group(self, *args: object) -> tuple[PreparedRepository, ...]:
+        def prepare_group(
+            self, *args: object, **kwargs: object
+        ) -> tuple[PreparedRepository, ...]:
             return prepared
 
         def assert_heads_unchanged(self, items: tuple[PreparedRepository, ...]) -> None:
