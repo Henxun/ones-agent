@@ -12,6 +12,7 @@ import pytest
 import src.developer_workflow.defect_flow as defect_flow_module
 
 from src.contracts import (
+    CommentRecord,
     DefectRecord,
     IdentityRef,
     IssueTypeRef,
@@ -2431,6 +2432,107 @@ def _flow(
         test_runner=test_runner,
     )
     return flow, store, repository, codex, test_runner
+
+
+@dataclass
+class FakeCommentGateway:
+    comments: list[CommentRecord] = field(default_factory=list)
+    failure: Exception | None = None
+    calls: list[str] = field(default_factory=list)
+
+    def list_defect_comments_sync(
+        self, item_id: str, *, page_size: int = 200
+    ) -> list[CommentRecord]:
+        assert page_size == 200
+        self.calls.append(item_id)
+        if self.failure is not None:
+            raise self.failure
+        return list(self.comments)
+
+
+def test_reopened_defect_freezes_comments_before_analysis(tmp_path: Path) -> None:
+    flow, store, _, codex, _ = _flow(tmp_path)
+    assert store.run.defect is not None
+    store.run = store.run.validated_update(
+        defect=replace(
+            store.run.defect,
+            status=StatusRef(id="reopened", name="重新打开", category="doing"),
+        )
+    )
+    gateway = FakeCommentGateway(
+        comments=[CommentRecord(id="m1", text="离线后仍会闪绿，请重新检查。")]
+    )
+    flow.comments_gateway = gateway
+
+    result = flow.execute(store.run)
+
+    assert result.state is WorkflowState.WAITING_APPROVAL, result.blocked_reason
+    assert gateway.calls == [result.work_item_id]
+    assert result.defect is not None and result.defect.comments_loaded is True
+    assert result.defect.comments == gateway.comments
+    assert any("离线后仍会闪绿，请重新检查。" in prompt for prompt in codex.prompts)
+    restored = WorkflowRun.model_validate_json(result.model_dump_json())
+    assert restored.defect is not None
+    assert restored.defect.comments == gateway.comments
+
+
+def test_reopened_defect_comment_failure_blocks_before_repository_or_agent(
+    tmp_path: Path,
+) -> None:
+    flow, store, repository, codex, tests = _flow(tmp_path)
+    assert store.run.defect is not None
+    store.run = store.run.validated_update(
+        defect=replace(
+            store.run.defect,
+            status=StatusRef(id="reopened", name="Reopened", category="doing"),
+        )
+    )
+    gateway = FakeCommentGateway(failure=RuntimeError("network detail must stay private"))
+    flow.comments_gateway = gateway
+
+    result = flow.execute(store.run)
+
+    assert result.state is WorkflowState.BLOCKED
+    assert result.resume_state is WorkflowState.READING_ONES
+    assert result.blocked_reason == "reopened ONES defect comments could not be loaded"
+    assert gateway.calls == [result.work_item_id]
+    assert repository.prepare_calls == 0
+    assert codex.stages == []
+    assert tests.commands == []
+
+
+def test_non_reopened_defect_does_not_fetch_comments(tmp_path: Path) -> None:
+    flow, store, _, _, _ = _flow(tmp_path)
+    gateway = FakeCommentGateway(failure=AssertionError("must not be called"))
+    flow.comments_gateway = gateway
+
+    result = flow.execute(store.run)
+
+    assert result.state is WorkflowState.WAITING_APPROVAL, result.blocked_reason
+    assert gateway.calls == []
+
+
+def test_reopened_defect_resume_reuses_frozen_comment_snapshot(tmp_path: Path) -> None:
+    flow, store, _, _, _ = _flow(tmp_path)
+    assert store.run.defect is not None
+    store.run = store.run.validated_update(
+        state=WorkflowState.READING_ONES,
+        defect=replace(
+            store.run.defect,
+            status=StatusRef(id="reopened", name="重新打开", category="doing"),
+            comments=[CommentRecord(id="m1", text="已冻结的重开反馈")],
+            comments_loaded=True,
+        ),
+    )
+    gateway = FakeCommentGateway(failure=AssertionError("must not be called"))
+    flow.comments_gateway = gateway
+
+    result = flow._read_selected(store.run)
+
+    assert result.state is WorkflowState.VALIDATING
+    assert result.defect is not None
+    assert result.defect.comments[0].text == "已冻结的重开反馈"
+    assert gateway.calls == []
 
 
 def test_unconfirmed_repository_mapping_stops_at_validating(tmp_path: Path) -> None:

@@ -13,6 +13,7 @@ from src.developer_workflow.config import DeveloperWorkflowConfig, PublishingCon
 from src.developer_workflow.contracts import RepositoryMapping
 from src.developer_workflow.setup_models import (
     ActiveSetup,
+    DEFAULT_ONES_COMMENT_LIST_PATH_TEMPLATE,
     RuntimeInputs,
     RuntimePublicConfig,
     RuntimeSecrets,
@@ -21,6 +22,19 @@ from src.developer_workflow.setup_models import (
     SetupValidationError,
     WorkflowDraft,
 )
+
+
+def test_legacy_default_comment_path_is_migrated_to_messages_endpoint() -> None:
+    config = _public_config(
+        ones_comment_list_path_template=(
+            "/project/api/project/team/{team_id}/task/{item_id}/comments"
+        )
+    )
+
+    assert (
+        config.ones_comment_list_path_template
+        == DEFAULT_ONES_COMMENT_LIST_PATH_TEMPLATE
+    )
 
 
 def _public_config(**overrides: object) -> RuntimePublicConfig:

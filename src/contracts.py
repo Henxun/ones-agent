@@ -78,6 +78,15 @@ class RepoCandidate:
 
 
 @dataclass(slots=True)
+class CommentRecord:
+    id: str = ""
+    text: str = ""
+    author_id: str = ""
+    author_name: str = ""
+    created_at: str = ""
+
+
+@dataclass(slots=True)
 class DefectRecord:
     defect_id: str = ""
     title: str = ""
@@ -94,6 +103,8 @@ class DefectRecord:
     deadline: str = ""
     created_at: str = ""
     updated_at: str = ""
+    comments: list[CommentRecord] = field(default_factory=list)
+    comments_loaded: bool = False
     source: str = "ones"
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -342,6 +353,7 @@ __all__ = [
     "CommitActorRef",
     "CommitCandidate",
     "CommitterOwnerMapping",
+    "CommentRecord",
     "DefectRecord",
     "EvidenceReference",
     "ExecutionRequest",

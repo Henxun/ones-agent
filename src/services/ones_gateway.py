@@ -23,6 +23,7 @@ import requests
 import structlog
 
 from src.contracts import (
+    CommentRecord,
     DefectRecord,
     IdentityRef,
     IssueTypeRef,
@@ -318,6 +319,16 @@ class OnesGateway:
         payload = self._call_sync("list_comments", self._comment_item_id(item_id), page_size=page_size)
         return self._normalize_comments(payload)
 
+    def list_defect_comments_sync(
+        self, item_id: str, *, page_size: int = 200
+    ) -> list[CommentRecord]:
+        """Read normalized comment evidence for a selected defect snapshot."""
+
+        payload = self._call_sync(
+            "list_comments", self._comment_item_id(item_id), page_size=page_size
+        )
+        return self._normalize_comment_records(payload)
+
     async def add_comment(self, item_id: str, text: str) -> dict[str, str]:
         item_id = self._comment_item_id(item_id)
         text = self._comment_text(text)
@@ -350,19 +361,34 @@ class OnesGateway:
 
     @classmethod
     def _normalize_comments(cls, payload: object) -> list[dict[str, str]]:
+        return [
+            {"id": item.id, "text": item.text}
+            for item in cls._normalize_comment_records(payload)
+        ]
+
+    @classmethod
+    def _normalize_comment_records(cls, payload: object) -> list[CommentRecord]:
         if not isinstance(payload, list):
             raise OnesGatewayPayloadError("Malformed ONES comments payload: expected list")
-        result: list[dict[str, str]] = []
+        result: list[CommentRecord] = []
         seen: set[str] = set()
         for entry in payload:
             if not isinstance(entry, dict):
                 raise OnesGatewayPayloadError("Malformed ONES comment: expected mapping")
-            identity = entry.get("id", entry.get("uuid"))
-            text = entry.get("text", entry.get("message", entry.get("content")))
-            if type(identity) is not str or not identity.strip() or type(text) is not str:
+            identity = entry.get("id", entry.get("uuid", entry.get("message_uuid")))
+            text_value = entry.get("text", entry.get("message", entry.get("content")))
+            if text_value is None:
+                continue
+            if isinstance(text_value, dict):
+                text_value = text_value.get("text", text_value.get("plain"))
+            if (
+                type(identity) is not str
+                or not identity.strip()
+                or type(text_value) is not str
+            ):
                 raise OnesGatewayPayloadError("Malformed ONES comment fields")
             identity = cls._ensure_utf8(identity.strip(), context="comment id")
-            text = cls._ensure_utf8(text, context="comment text")
+            text = cls._ensure_utf8(text_value, context="comment text")
             if any(ord(character) < 32 or ord(character) == 127 for character in identity):
                 raise OnesGatewayPayloadError("Malformed ONES comment identity")
             if any(ord(character) < 32 and character not in "\n\t" for character in text):
@@ -370,7 +396,39 @@ class OnesGateway:
             if identity in seen:
                 continue
             seen.add(identity)
-            result.append({"id": identity, "text": text})
+            author: dict[str, object] = {}
+            for key in ("user", "sender", "creator", "createUser"):
+                value = entry.get(key)
+                if isinstance(value, dict):
+                    author = value
+                    break
+            author_id = author.get("uuid", author.get("id", ""))
+            author_name = author.get("name", author.get("display_name", ""))
+            created_at = entry.get(
+                "createTime",
+                entry.get("created_at", entry.get("create_time", "")),
+            )
+            result.append(
+                CommentRecord(
+                    id=identity,
+                    text=text,
+                    author_id=(
+                        cls._ensure_utf8(author_id, context="comment author id")
+                        if type(author_id) is str
+                        else ""
+                    ),
+                    author_name=(
+                        cls._ensure_utf8(author_name, context="comment author name")
+                        if type(author_name) is str
+                        else ""
+                    ),
+                    created_at=(
+                        cls._ensure_utf8(str(created_at), context="comment created_at")
+                        if created_at not in (None, "")
+                        else ""
+                    ),
+                )
+            )
         return result
 
     @classmethod

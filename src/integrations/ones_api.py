@@ -1337,6 +1337,7 @@ class OnesAsyncClient:
             raise ValueError("page_size must be between 1 and 1000")
         path = _comment_path(self._comment_list_path_template, self._team_id, item_id)
         client = await self._get_client()
+        messages_endpoint = path.endswith("/messages")
         cursor = ""
         seen = {cursor}
         comments: list[dict] = []
@@ -1348,20 +1349,31 @@ class OnesAsyncClient:
                 raise OnesPaginationError("ONES comment pagination limit exceeded")
             async with client.stream(
                 "GET", f"{self._base_url}{path}",
-                params={"limit": page_size, "after": cursor},
+                params=None if messages_endpoint else {"limit": page_size, "after": cursor},
                 timeout=self._comment_timeout_seconds,
             ) as response:
                 payload, actual_size = await _stream_json_response(
                     response, self._comment_max_payload_bytes - total_bytes
                 )
             total_bytes += actual_size
-            if not isinstance(payload, Mapping) or not isinstance(payload.get("comments"), list):
+            entries = (
+                payload
+                if isinstance(payload, list)
+                else payload.get("messages")
+                if messages_endpoint and isinstance(payload, Mapping)
+                else payload.get("comments")
+                if isinstance(payload, Mapping)
+                else None
+            )
+            if not isinstance(entries, list):
                 raise OnesPayloadError("ONES comments payload must contain a list")
-            if any(not isinstance(item, Mapping) for item in payload["comments"]):
+            if any(not isinstance(item, Mapping) for item in entries):
                 raise OnesPayloadError("ONES comment entries must be mappings")
-            comments.extend(dict(item) for item in payload["comments"])
+            comments.extend(dict(item) for item in entries)
             if len(comments) > self._comment_max_comments:
                 raise OnesPayloadError("ONES comments count exceeds limit")
+            if messages_endpoint:
+                return comments
             page_info = payload.get("pageInfo")
             if not isinstance(page_info, Mapping) or not isinstance(page_info.get("hasNextPage"), bool):
                 raise OnesPaginationError("ONES comment pagination has invalid pageInfo")

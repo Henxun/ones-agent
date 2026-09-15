@@ -9,12 +9,14 @@ import pytest
 import respx
 
 from config.settings import OnesSettings
+from src.contracts import CommentRecord
 from src.integrations.ones import OnesClient, OnesPaginationError, OnesPayloadError
 from src.integrations.ones_api import OnesAsyncClient
 from src.services.ones_gateway import OnesGateway, OnesGatewayPayloadError
 
 
 COMMENT_PATH = "/project/api/project/team/{team_id}/task/{item_id}/comment"
+MESSAGES_PATH = "/project/api/project/team/{team_id}/task/{item_id}/messages"
 
 
 def streamed(payload) -> Mock:
@@ -53,6 +55,29 @@ def test_sync_list_comments_uses_get_and_strict_cursor_pagination() -> None:
     assert client.session.get.call_count == 2
     assert all(call.kwargs["params"]["limit"] == 10 for call in client.session.get.call_args_list)
     assert all(call.kwargs["timeout"] == 30.0 for call in client.session.get.call_args_list)
+
+
+def test_sync_messages_endpoint_matches_browser_request_without_query_params() -> None:
+    client = OnesClient(
+        base_url="http://ones.test",
+        email="",
+        password="",
+        team_id="team",
+        comment_list_path_template=MESSAGES_PATH,
+    )
+    client.session.get = Mock(
+        return_value=streamed(
+            {"messages": [{"uuid": "m1", "message": "reopened feedback"}]}
+        )
+    )
+
+    result = client.list_comments("item")
+
+    assert result == [{"uuid": "m1", "message": "reopened feedback"}]
+    assert client.session.get.call_args.args[0].endswith(
+        "/project/api/project/team/team/task/item/messages"
+    )
+    assert client.session.get.call_args.kwargs["params"] is None
 
 
 def test_sync_comment_pagination_rejects_nonadvancing_cursor() -> None:
@@ -186,6 +211,24 @@ async def test_async_list_comments_uses_only_get() -> None:
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_async_messages_endpoint_accepts_top_level_browser_payload() -> None:
+    settings = OnesSettings(
+        base_url="http://ones.test", email="", password="", team_id="team", _env_file=None
+    )
+    client = OnesAsyncClient(settings, comment_list_path_template=MESSAGES_PATH)
+    route = respx.get(
+        "http://ones.test/project/api/project/team/team/task/item/messages"
+    ).mock(return_value=httpx.Response(200, json=[{"uuid": "m1", "message": "note"}]))
+
+    result = await client.list_comments("item")
+
+    assert route.called
+    assert result == [{"uuid": "m1", "message": "note"}]
+    await client.close()
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_async_comment_page_and_payload_limits_fail_closed() -> None:
     settings = OnesSettings(
         base_url="http://ones.test", email="", password="", team_id="team",
@@ -261,3 +304,30 @@ async def test_gateway_rejects_malformed_comment_payload() -> None:
             return [{"uuid":"c1","message":123}]
     with pytest.raises(OnesGatewayPayloadError):
         await OnesGateway(async_client=Client()).list_comments("item")
+
+
+def test_gateway_builds_typed_defect_comment_snapshot() -> None:
+    class Client:
+        def list_comments(self, item_id, **kwargs):
+            assert item_id == "item"
+            return [
+                {
+                    "message_uuid": "m1",
+                    "content": {"text": "please recheck the offline path"},
+                    "sender": {"uuid": "u1", "name": "Reviewer"},
+                    "createTime": 1789444886,
+                },
+                {"uuid": "system-event"},
+            ]
+
+    comments = OnesGateway(sync_client=Client()).list_defect_comments_sync("item")
+
+    assert comments == [
+        CommentRecord(
+            id="m1",
+            text="please recheck the offline path",
+            author_id="u1",
+            author_name="Reviewer",
+            created_at="1789444886",
+        )
+    ]

@@ -39,6 +39,9 @@ class SetupValidationError(ValueError):
 
 
 DEFAULT_ONES_COMMENT_LIST_PATH_TEMPLATE = (
+    "/project/api/project/team/{team_id}/task/{item_id}/messages"
+)
+LEGACY_ONES_COMMENT_LIST_PATH_TEMPLATE = (
     "/project/api/project/team/{team_id}/task/{item_id}/comments"
 )
 
@@ -300,9 +303,13 @@ class RuntimePublicConfig(SetupModel):
             raise ValueError("provider_host must be a bare host name")
         return value
 
-    @field_validator("ones_comment_list_path_template")
+    @field_validator("ones_comment_list_path_template", mode="before")
     @classmethod
-    def validate_comment_path_template(cls, value: str) -> str:
+    def validate_comment_path_template(cls, value: object) -> object:
+        if value == LEGACY_ONES_COMMENT_LIST_PATH_TEMPLATE:
+            value = DEFAULT_ONES_COMMENT_LIST_PATH_TEMPLATE
+        if type(value) is not str:
+            return value
         _validated_text(value, "ones_comment_list_path_template")
         parsed = urlsplit(value)
         if (

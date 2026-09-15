@@ -583,6 +583,7 @@ class RuntimeBootstrapper:
             defect_flow = DefectFlow(
                 store, workflow, repository, requirement_agent, test_runner,
                 group_workspace=group_workspace,
+                comments_gateway=gateway,
             )
             agent_definition = coding_agent_definition(public.coding_agent)
             agent_provenance = CodingAgentProvenance(
