@@ -69,6 +69,7 @@ from .verification_settings import VerificationNodesPane
 from .ones_settings import OnesSettingsPane
 from .provider_settings import ProviderSettingsPane
 from .coding_agent_settings import CodingAgentSettingsPane
+from .task_board import TaskBoardPane
 from . import detail_rendering
 from ..verification import public_text
 
@@ -2506,12 +2507,15 @@ class WorkspaceDetailScreen(Screen[bool]):
                                 "查询后，需求会显示在这里。",
                                 classes="workspace-requirement-empty",
                             )
-                with TabPane("任务列表", id="workspace-tasks-tab"):
-                    yield Static("本工作区的缺陷与需求任务；未绑定工作区的任务请到全局 Tasks 查看。",
-                                 classes="workspace-module-description")
-                    yield Button("刷新任务", id="workspace-refresh-tasks")
-                    yield Static("尚未加载", id="workspace-task-status", markup=False)
-                    yield ListView(id="workspace-task-list")
+                with TabPane("任务看板", id="workspace-tasks-tab"):
+                    yield TaskBoardPane(
+                        self._controller,
+                        self._supervisor,
+                        self.workspace,
+                        self._workflow_started,
+                        self._start_board_defect,
+                        id="workspace-task-board",
+                    )
                 with TabPane("关联仓库", id="workspace-repositories-tab"):
                     with VerticalScroll(classes="workspace-module-body"):
                         yield Static("工作区仓库", classes="workspace-module-title")
@@ -3067,60 +3071,7 @@ class WorkspaceDetailScreen(Screen[bool]):
     @on(TabbedContent.TabActivated, "#workspace-modules")
     async def _module_changed(self, event: TabbedContent.TabActivated) -> None:
         if event.pane.id == "workspace-tasks-tab":
-            await self._refresh_tasks()
-
-    @on(Button.Pressed, "#workspace-refresh-tasks")
-    async def _refresh_tasks(self) -> None:
-        status = self.query_one("#workspace-task-status", Static)
-        button = self.query_one("#workspace-refresh-tasks", Button)
-        button.disabled = True
-        status.update("正在加载任务…")
-        listing = self.query_one("#workspace-task-list", ListView)
-        try:
-            runs = await self._supervisor.run_readonly(
-                "workspace-tasks", self._controller.list_workspace_runs, self.workspace)
-            await listing.clear()
-            await listing.extend([
-                self._workspace_task_card(item)
-                for item in runs
-            ])
-            status.update(f"共 {len(runs)} 项任务 · 点击卡片或 ↑↓ 选择后按 Enter 查看详情" if runs else "本工作区暂无已绑定任务")
-        except Exception:
-            await listing.clear()
-            status.update("任务加载失败，请重试")
-        finally:
-            button.disabled = False
-
-    @staticmethod
-    def _workspace_task_card(item: RunSummary) -> ListItem:
-        state = item.state.value
-        tone = ("attention" if state in {"BLOCKED", "WAITING_APPROVAL", "WAITING_PR_VERIFICATION", "PARTIAL_SUCCESS"}
-                else "failed" if state == "FAILED"
-                else "complete" if state == "COMPLETED" else "normal")
-        return ListItem(
-            Vertical(
-                Static(Text.from_markup(
-                    f"{'缺陷' if item.workflow_type is WorkflowType.DEFECT else '需求'}  ·  {item.work_item_id}"),
-                    markup=False, classes="workspace-task-title"),
-                Static(f"{detail_rendering.state_name(state)}  ·  {state}",
-                       markup=False, classes="workspace-task-state"),
-                Static(f"更新时间：{item.updated_at.astimezone().strftime('%Y-%m-%d %H:%M')}  ·  版本 {item.version}",
-                       markup=False, classes="workspace-task-meta"),
-                Static(Text.from_markup(f"任务 ID：{item.run_id}"), markup=False,
-                       classes="workspace-task-meta"),
-                Static("查看任务详情 →", classes="workspace-task-open"),
-                classes="workspace-task-content"),
-            name=item.run_id, classes=f"workspace-task-card {tone}")
-
-    @on(ListView.Selected, "#workspace-task-list")
-    async def _open_workspace_task(self, event: ListView.Selected) -> None:
-        if event.item.name:
-            try:
-                detail = await self._supervisor.run_readonly(
-                    "workspace-task-detail", self._controller.show, event.item.name)
-                self._workflow_started(detail)
-            except Exception:
-                self.query_one("#workspace-task-status", Static).update("任务详情暂不可用，请刷新后重试")
+            await self.query_one("#workspace-task-board", TaskBoardPane).refresh_board()
 
     @on(Button.Pressed, "#workspace-query-defects")
     async def _query_defects(self) -> None:
@@ -3213,6 +3164,38 @@ class WorkspaceDetailScreen(Screen[bool]):
                 controller=self._controller,
                 supervisor=self._supervisor,
             ))
+
+    def _start_board_defect(
+        self,
+        session_id: str,
+        candidates: tuple[DefectChoice, ...],
+        selected_candidate: int,
+        analyze_only: bool,
+    ) -> None:
+        """Transfer one live board candidate into the existing defect flow."""
+
+        try:
+            self.app.push_screen(
+                DefectWizardScreen(
+                    self._controller,
+                    self._supervisor,
+                    workspace=self.workspace,
+                    candidate_session_id=session_id,
+                    candidates=candidates,
+                    selected_candidate=selected_candidate,
+                    analyze_only=analyze_only,
+                ),
+                callback=self._workflow_started,
+            )
+        except Exception:
+            discard = getattr(
+                self._controller, "discard_candidate_session", None
+            )
+            if callable(discard):
+                discard(session_id)
+            self.query_one("#workspace-task-status", Static).update(
+                "无法打开缺陷工作流，请刷新看板后重试"
+            )
 
     @on(Button.Pressed, "#workspace-delete")
     def _delete_workspace(self) -> None:

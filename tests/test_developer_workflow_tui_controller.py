@@ -28,6 +28,11 @@ from src.developer_workflow.schedules import (
     ScheduleRunStatus,
     ScheduleStore,
 )
+from src.developer_workflow.planning_tasks import (
+    PlanningTask,
+    PlanningTaskStatus,
+    PlanningTaskStore,
+)
 from src.developer_workflow.tui.controller import (
     CandidateSessionView,
     StaleCandidateError,
@@ -250,6 +255,72 @@ def test_load_defect_filter_options_reads_project_scoped_ones_metadata() -> None
         ("current-user",),
         ("members", ("user-1", "user-2")),
         ("statuses", "project-1", "defect-type"),
+    ]
+
+
+def test_workspace_board_queries_current_users_pending_and_reopened_defects() -> None:
+    captured: list[tuple[object, ...]] = []
+
+    class Gateway:
+        async def list_iterations(self, project: str):
+            return []
+
+        async def list_role_members(self, project: str):
+            return [{"members": ["current-user"]}]
+
+        async def get_current_user_id(self):
+            return "current-user"
+
+        async def list_team_members(self, *, uuids):
+            return [{"uuid": "current-user", "name": "Current User"}]
+
+        async def list_defect_statuses(self, project: str, issue_type: str):
+            return [
+                WorkflowStatusRef(
+                    id="pending-id", name="待处理", category="open"
+                ),
+                WorkflowStatusRef(
+                    id="reopened-id", name="重新打开", category="open"
+                ),
+                WorkflowStatusRef(
+                    id="doing-id", name="修复中", category="doing"
+                ),
+            ]
+
+    class BoardCandidates:
+        gateway = Gateway()
+        issue_type_id = "defect-type"
+
+        async def list_candidates(
+            self, project, iteration, assignee, *, status_ids=None
+        ):
+            captured.append((project, iteration, assignee, status_ids))
+            return (
+                candidate().model_copy(
+                    update={"status_id": "pending-id", "status": "待处理"}
+                ),
+            )
+
+    workspace = WorkspaceSummary(
+        key="workspace",
+        project_id="project",
+        iteration_id="iteration",
+        repositories=("repo",),
+    )
+    orchestrator = Orchestrator()
+    orchestrator.defect_candidates = BoardCandidates()
+    controller = TuiController(orchestrator, Index())
+    controller.list_workspaces = lambda: (workspace,)
+    try:
+        result = controller.query_workspace_board_defects(workspace)
+        controller.discard_candidate_session(result.session_id)
+    finally:
+        controller.close()
+
+    assert tuple(item.candidate_id for item in result.items) == ("D-1",)
+    assert result.items[0].status_name == "待处理"
+    assert captured == [
+        ("project", "iteration", "current-user", ("pending-id", "reopened-id"))
     ]
 
 
@@ -1357,6 +1428,48 @@ def test_schedule_history_adapters_are_bounded_display_safe_and_workspace_scoped
     assert len(items) == 1
     assert items[0].defect_id == "DEFECT-1"
     assert items[0].reason == "manual check required"
+
+
+def test_planning_task_adapters_enforce_current_workspace_and_version(tmp_path):
+    store = PlanningTaskStore(tmp_path / "planning")
+    workspace = WorkspaceSummary(
+        key="workspace",
+        project_id="project",
+        iteration_id="iteration",
+        repositories=("repo",),
+    )
+    stale_workspace = WorkspaceSummary(
+        key="workspace",
+        project_id="project",
+        iteration_id="old-iteration",
+        repositories=("repo",),
+    )
+    controller = TuiController(Orchestrator(), Index())
+    controller.planning_task_store = store
+    controller.list_workspaces = lambda: (workspace,)
+    try:
+        created = controller.save_planning_task(
+            workspace,
+            PlanningTask(workspace=workspace.key, title="验证安装包"),
+            expected_version=None,
+        )
+        assert controller.list_planning_tasks(workspace) == (created,)
+        updated = controller.save_planning_task(
+            workspace,
+            created.model_copy(update={"status": PlanningTaskStatus.DONE}),
+            expected_version=created.version,
+        )
+        with pytest.raises(TuiControllerError, match="任务看板不可用"):
+            controller.list_planning_tasks(stale_workspace)
+        with pytest.raises(TuiControllerError, match="任务删除失败"):
+            controller.delete_planning_task(
+                workspace,
+                created,
+            )
+        controller.delete_planning_task(workspace, updated)
+        assert controller.list_planning_tasks(workspace) == ()
+    finally:
+        controller.close()
 
 
 def test_generic_resume_cannot_bypass_publication_confirmation():

@@ -19,6 +19,7 @@ from typing import Literal
 from ..config import DeveloperWorkflowConfig
 from ..verification import digest
 from ..schedules import serialized_mutation
+from ..planning_tasks import PlanningTask
 from ..contracts import (
     DefectAction,
     RepositoryGroupMapping,
@@ -316,6 +317,7 @@ class TuiController:
         self._candidate_lock = Lock()
         self._workspace_lock = Lock()
         self.schedule_store = None
+        self.planning_task_store = None
         self._closed = False
         self._async_runtime = _AsyncRuntime()
 
@@ -357,6 +359,68 @@ class TuiController:
             return self._run_index.list(RunFilter(), workspace=workspace)
         except Exception:
             raise TuiControllerError("workspace tasks are unavailable") from None
+
+    def list_planning_tasks(
+        self, workspace: WorkspaceSummary
+    ) -> tuple[PlanningTask, ...]:
+        """Return manually planned tasks without crossing workspace scope."""
+
+        try:
+            if not self._workspace_is_current(workspace) or self.planning_task_store is None:
+                raise ValueError()
+            return self.planning_task_store.list(workspace.key)
+        except (KeyboardInterrupt, SystemExit, GeneratorExit, MemoryError):
+            raise
+        except Exception:
+            raise TuiControllerError("任务看板不可用") from None
+
+    def save_planning_task(
+        self,
+        workspace: WorkspaceSummary,
+        task: PlanningTask,
+        *,
+        expected_version: int | None,
+    ) -> PlanningTask:
+        """Create or update one local planning task with workspace authorization."""
+
+        try:
+            if (
+                not self._workspace_is_current(workspace)
+                or self.planning_task_store is None
+                or task.workspace != workspace.key
+            ):
+                raise ValueError()
+            return self.planning_task_store.save(
+                task, expected_version=expected_version
+            )
+        except (KeyboardInterrupt, SystemExit, GeneratorExit, MemoryError):
+            raise
+        except Exception:
+            raise TuiControllerError("任务保存失败，请刷新后重试") from None
+
+    def delete_planning_task(
+        self,
+        workspace: WorkspaceSummary,
+        task: PlanningTask,
+    ) -> None:
+        """Delete one local planning task after checking its workspace and version."""
+
+        try:
+            if (
+                not self._workspace_is_current(workspace)
+                or self.planning_task_store is None
+                or task.workspace != workspace.key
+            ):
+                raise ValueError()
+            self.planning_task_store.delete(
+                task.id,
+                workspace=workspace.key,
+                expected_version=task.version,
+            )
+        except (KeyboardInterrupt, SystemExit, GeneratorExit, MemoryError):
+            raise
+        except Exception:
+            raise TuiControllerError("任务删除失败，请刷新后重试") from None
 
     def _workspace_is_current(self, workspace: WorkspaceSummary) -> bool:
         if type(workspace) is not WorkspaceSummary:
@@ -749,6 +813,66 @@ class TuiController:
             while len(self._candidate_sessions) > self._max_candidate_sessions:
                 self._candidate_sessions.popitem(last=False)
         return CandidateSessionView(session_id=session_id, items=items)
+
+    def discard_candidate_session(self, session_id: str) -> None:
+        """Revoke one unused defect candidate capability."""
+
+        if type(session_id) is not str:
+            return
+        with self._candidate_lock:
+            self._candidate_sessions.pop(session_id, None)
+
+    def query_workspace_board_defects(
+        self, workspace: WorkspaceSummary
+    ) -> CandidateSessionView:
+        """Load the current user's pending/reopened ONES defects for a board."""
+
+        if not self._workspace_is_current(workspace):
+            raise TuiControllerError(_QUERY_UNAVAILABLE)
+        options = self.load_defect_filter_options(workspace.project_id)
+        assignee = next(
+            (choice.id for choice in options.assignees if choice.selected), ""
+        )
+
+        def normalized(value: str) -> str:
+            return "".join(
+                character
+                for character in value.strip().casefold()
+                if not character.isspace() and character not in "_-"
+            )
+
+        pending_names = {
+            "待处理",
+            "重新打开",
+            "pending",
+            "reopen",
+            "reopened",
+            "todo",
+        }
+        status_ids = tuple(
+            choice.id
+            for choice in options.statuses
+            if normalized(choice.name) in pending_names
+        )
+        if not assignee or not status_ids:
+            raise TuiControllerError(_QUERY_UNAVAILABLE)
+        session = self.query_defects(
+            workspace.project_id,
+            workspace.iteration_id,
+            assignee,
+            status_ids,
+        )
+        status_names = {choice.id: choice.name for choice in options.statuses}
+        return replace(
+            session,
+            items=tuple(
+                replace(
+                    item,
+                    status_name=status_names.get(item.status_id, item.status_id),
+                )
+                for item in session.items
+            ),
+        )
 
     def load_defect_filter_options(self, project: str) -> DefectFilterOptions:
         """Read project-scoped iteration, member, and open-status choices."""

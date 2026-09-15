@@ -411,6 +411,7 @@ class DefectChoice:
     title: str
     status_id: str
     priority: str
+    status_name: str = ""
 
     @classmethod
     def from_candidate(cls, candidate: DefectCandidate) -> DefectChoice:

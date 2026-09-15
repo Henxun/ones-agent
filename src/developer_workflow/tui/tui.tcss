@@ -677,30 +677,78 @@ DefectStatusFilterScreen {
     margin-left: 1;
 }
 
-#workspace-task-list { height: 1fr; }
-#workspace-task-list .workspace-task-card {
+#workspace-task-board { width: 100%; height: 1fr; }
+#task-board-header { width: 100%; height: auto; }
+#task-board-heading { width: 1fr; height: auto; }
+#task-board-toolbar {
+    width: auto;
+    height: 3;
+    align: right middle;
+}
+#task-board-toolbar Button { min-width: 12; margin-left: 1; }
+#workspace-task-status {
+    height: auto;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+#task-board-columns { width: 100%; height: 1fr; }
+#workspace-detail-body.one #task-board-columns,
+#workspace-detail-body.two #task-board-columns { layout: vertical; }
+#workspace-detail-body.one .task-board-column,
+#workspace-detail-body.two .task-board-column {
+    width: 100%;
+    height: 1fr;
+    margin: 0 0 1 0;
+}
+#workspace-detail-body.one #task-board-header { layout: vertical; }
+#workspace-detail-body.one #task-board-toolbar { width: 100%; }
+.task-board-column {
+    width: 1fr;
+    height: 100%;
+    border: round $panel;
+    background: $boost;
+    margin-right: 1;
+    padding: 0 1;
+}
+.task-board-column:last-of-type { margin-right: 0; }
+.task-board-column-title {
+    width: 1fr;
+    height: auto;
+    text-style: bold;
+    color: $accent;
+    padding-top: 1;
+}
+.task-board-column-count {
+    height: auto;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+.task-board-list { width: 100%; height: 1fr; background: transparent; }
+.task-board-card {
+    width: 100%;
     height: auto;
     border: round $primary;
     background: $surface;
     margin-bottom: 1;
     padding: 0 1;
 }
-#workspace-task-list .workspace-task-content,
-#workspace-task-list .workspace-task-card Static { height: auto; }
-#workspace-task-list .workspace-task-title { text-style: bold; }
-#workspace-task-list .workspace-task-state { color: $accent; }
-#workspace-task-list .attention { border: round $warning; }
-#workspace-task-list .attention .workspace-task-state { color: $warning; }
-#workspace-task-list .failed { border: round $error; }
-#workspace-task-list .failed .workspace-task-state { color: $error; }
-#workspace-task-list .complete .workspace-task-state { color: $success; }
-#workspace-task-list .workspace-task-meta { color: $text-muted; }
-#workspace-task-list .workspace-task-open { color: $accent; margin-top: 1; }
-#workspace-task-list .workspace-task-card.-highlight {
+.task-board-card Static, .task-card-content { height: auto; }
+.task-card-title { text-style: bold; color: $text; }
+.task-card-badge { color: $accent; }
+.task-board-card.priority-high { border: round $warning; }
+.task-board-card.priority-high .task-card-badge { color: $warning; }
+.task-board-card.failed { border: round $error; }
+.task-board-card.failed .task-card-description { color: $error; }
+.task-board-card.attention { border: round $warning; }
+.task-board-card.complete .task-card-description { color: $success; }
+.task-card-description, .task-card-meta { color: $text-muted; }
+.task-card-description { margin-top: 1; }
+.task-card-open { color: $accent; margin-top: 1; }
+.task-board-card.-highlight {
     border: round $accent;
     background: $boost;
 }
-#workspace-task-status, #workspace-detail-notice { height: auto; }
+#workspace-detail-notice { height: auto; }
 #workspace-detail-footer {
     width: 100%;
     height: 3;

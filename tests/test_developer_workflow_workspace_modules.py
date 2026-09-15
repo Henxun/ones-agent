@@ -11,6 +11,7 @@ from textual.widgets import Button, Input, ListView, Select, Static, TabbedConte
 
 from src.developer_workflow.contracts import RepositoryMapping, WorkflowRun, WorkflowState, WorkflowType
 from src.developer_workflow.tui.models import (
+    DefectChoice,
     DefectFilterOptions,
     FilterChoice,
     RequirementChoice,
@@ -20,7 +21,14 @@ from src.developer_workflow.tui.models import (
     RunSummary,
     WorkspaceSummary,
 )
+from src.developer_workflow.tui.controller import CandidateSessionView
 from src.developer_workflow.tui.run_index import RunIndex
+from src.developer_workflow.planning_tasks import (
+    PlanningTask,
+    PlanningTaskPriority,
+    PlanningTaskStatus,
+    PlanningTaskType,
+)
 from src.developer_workflow.tui.screens import (
     DashboardScreen,
     DefectStatusFilterScreen,
@@ -29,6 +37,10 @@ from src.developer_workflow.tui.screens import (
     WorkspaceDetailScreen,
     WorkspaceListPane,
     WorkspaceRenameScreen,
+)
+from src.developer_workflow.tui.task_board import (
+    BoardDefectActionScreen,
+    PlanningTaskEditor,
 )
 from dataclasses import replace
 
@@ -116,12 +128,50 @@ class Controller:
         self.requirement_starts = []
         self.requirement_fail = False
         self.discarded_requirement_sessions = []
+        self.planning_tasks = ()
+        self.board_defects = ()
+        self.discarded_board_sessions = []
 
     def list_workspace_runs(self, workspace):
         self.queries.append(workspace)
         if self.fail:
             raise RuntimeError("do not show backend details")
         return ()
+
+    def list_planning_tasks(self, workspace):
+        return self.planning_tasks
+
+    def query_workspace_board_defects(self, workspace):
+        return CandidateSessionView("board-session", self.board_defects)
+
+    def discard_candidate_session(self, session_id):
+        self.discarded_board_sessions.append(session_id)
+
+    def save_planning_task(self, workspace, task, *, expected_version):
+        assert task.workspace == workspace.key
+        current = next(
+            (item for item in self.planning_tasks if item.id == task.id), None
+        )
+        assert (current.version if current else None) == expected_version
+        saved = task.model_copy(
+            update={
+                "version": (current.version + 1) if current else 1,
+                "created_at": current.created_at if current else 10,
+                "updated_at": 20,
+            }
+        )
+        self.planning_tasks = tuple(
+            saved if item.id == saved.id else item for item in self.planning_tasks
+        )
+        if current is None:
+            self.planning_tasks += (saved,)
+        return saved
+
+    def delete_planning_task(self, workspace, task):
+        assert task.workspace == workspace.key
+        self.planning_tasks = tuple(
+            item for item in self.planning_tasks if item.id != task.id
+        )
 
     def query_requirements(self, project, iteration, assignee, status_ids, issue_type_id):
         self.requirement_queries.append(
@@ -315,29 +365,111 @@ async def test_workspace_task_cards_and_navigation(size):
         await pilot.pause()
         screen = app.screen
         screen._workflow_started = opened.append
+        screen.query_one("#workspace-task-board").open_workflow = opened.append
         screen.query_one("#workspace-modules", TabbedContent).active = "workspace-tasks-tab"
         for _ in range(30):
             await pilot.pause(0.05)
-            if len(screen.query(".workspace-task-card")) == 2:
+            if len(screen.query(".task-board-card")) == 2:
                 break
-        cards = list(screen.query(".workspace-task-card"))
+        cards = list(screen.query(".task-board-card"))
         assert len(cards) == 2
-        assert cards[1].region.y > cards[0].region.bottom
         assert cards[0].has_class("attention")
         assert cards[1].has_class("complete")
         for card in cards:
-            assert len(card.query(".workspace-task-meta")) == 2
-            assert card.query_one(".workspace-task-open").region.bottom < card.region.bottom
+            assert card.query_one(".task-card-open")
         assert screen.query_one("#workspace-detail-back").region.bottom <= size[1]
-        await pilot.click(cards[0].query_one(".workspace-task-title"))
-        await pilot.pause()
-        assert opened == [runs[0].run_id]
-        listing = screen.query_one("#workspace-task-list", ListView)
+        listing = screen.query_one("#task-list-in_progress", ListView)
         listing.focus()
-        listing.index = 1
+        listing.index = 0
         await pilot.press("enter")
         await pilot.pause()
-        assert opened[-1] == runs[1].run_id
+        assert opened == [runs[0].run_id]
+
+
+@pytest.mark.asyncio
+async def test_workspace_manual_task_can_be_added_and_moved() -> None:
+    app = WorkspaceApp()
+    app.controller.planning_tasks = (
+        PlanningTask(
+            workspace=WORKSPACE.key,
+            title="补充实机验证",
+            description="在 macOS 节点验证",
+            priority=PlanningTaskPriority.HIGH,
+            status=PlanningTaskStatus.TODO,
+            version=1,
+            created_at=10,
+            updated_at=10,
+        ),
+    )
+    async with app.run_test(size=(140, 42)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        screen.query_one("#workspace-modules", TabbedContent).active = (
+            "workspace-tasks-tab"
+        )
+        for _ in range(30):
+            await pilot.pause(0.05)
+            if screen.query(".task-board-card.manual"):
+                break
+        card = screen.query_one(".task-board-card.manual")
+        assert card.has_class("priority-high")
+        listing = screen.query_one("#task-list-todo", ListView)
+        listing.focus()
+        listing.index = 0
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, PlanningTaskEditor)
+        app.screen.query_one("#planning-task-title", Input).value = "完成实机验证"
+        app.screen.query_one("#planning-task-status", Select).value = "in_progress"
+        app.screen.query_one("#planning-task-type", Select).value = "requirement"
+        app.screen.query_one("#planning-task-save", Button).press()
+        for _ in range(30):
+            await pilot.pause(0.05)
+            if app.screen is screen and screen.query("#task-list-in_progress .manual"):
+                break
+        assert app.controller.planning_tasks[0].title == "完成实机验证"
+        assert app.controller.planning_tasks[0].status is PlanningTaskStatus.IN_PROGRESS
+        assert app.controller.planning_tasks[0].task_type is PlanningTaskType.REQUIREMENT
+        assert not screen.query("#task-list-todo .manual")
+        assert screen.query_one("#task-list-in_progress .manual")
+
+
+@pytest.mark.asyncio
+async def test_workspace_board_loads_ones_defects_and_requires_action_choice() -> None:
+    app = WorkspaceApp()
+    app.controller.board_defects = (
+        DefectChoice(
+            candidate_id="defect-1",
+            title="相机切换后无法预览",
+            status_id="pending-id",
+            priority="high",
+        ),
+    )
+    started = []
+    async with app.run_test(size=(140, 42)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        board = screen.query_one("#workspace-task-board")
+        board.start_defect = lambda *args: started.append(args)
+        screen.query_one("#workspace-modules", TabbedContent).active = (
+            "workspace-tasks-tab"
+        )
+        for _ in range(30):
+            await pilot.pause(0.05)
+            if screen.query("#task-list-todo .ones"):
+                break
+        listing = screen.query_one("#task-list-todo", ListView)
+        listing.focus()
+        listing.index = 0
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, BoardDefectActionScreen)
+        app.screen.query_one("#board-defect-analyze", Button).press()
+        await pilot.pause()
+        assert len(started) == 1
+        assert started[0][0] == "board-session"
+        assert started[0][1] == app.controller.board_defects
+        assert started[0][2:] == (0, True)
 
 
 @pytest.mark.asyncio
@@ -361,7 +493,10 @@ async def test_workspace_tabs_footer_and_requirement_scope(size):
         tabs.active = "workspace-tasks-tab"
         await pilot.pause()
         assert app.controller.queries == [WORKSPACE]
-        assert len(screen.query_one("#workspace-task-list", ListView).children) == 0
+        assert all(
+            len(screen.query_one(f"#task-list-{status}", ListView).children) == 0
+            for status in ("todo", "in_progress", "done")
+        )
         app.controller.fail = True
         screen.query_one("#workspace-refresh-tasks", Button).press()
         await pilot.pause()

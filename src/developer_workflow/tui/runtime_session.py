@@ -69,6 +69,7 @@ class TuiRuntimeSession:
     ) -> "TuiRuntimeSession":
         index = RunIndex(handle.orchestrator.store)
         from ..schedules import ScheduleStore
+        from ..planning_tasks import PlanningTaskStore
         controller = TuiController(
             handle.orchestrator,
             index,
@@ -78,6 +79,9 @@ class TuiRuntimeSession:
         session: TuiRuntimeSession
 
         controller.schedule_store = ScheduleStore(handle.orchestrator.config.run_root / ".schedules")
+        controller.planning_task_store = PlanningTaskStore(
+            handle.orchestrator.config.run_root / ".planning-tasks"
+        )
 
         def emit(event: TaskEvent) -> None:
             session.emit(event)
