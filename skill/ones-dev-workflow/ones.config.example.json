@@ -1,0 +1,16 @@
+{
+  "base_url": "https://ones.example.com",
+  "team_id": "",
+  "project_id": "",
+  "issue_types": {
+    "defect": "",
+    "requirement": ""
+  },
+  "auth": {
+    "mode": "account",
+    "email": "",
+    "password": "",
+    "password_env": ""
+  },
+  "timeout_seconds": 30
+}

@@ -1,0 +1,7 @@
+interface:
+  display_name: "ONES Dev Workflow"
+  short_description: "Read ONES items and Wiki evidence for code changes"
+  default_prompt: "Use $ones-dev-workflow to read an ONES defect, requirement, and any linked Wiki evidence, then complete the appropriate guarded development work."
+
+policy:
+  allow_implicit_invocation: true
