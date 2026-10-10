@@ -8,9 +8,21 @@
         "parameters": {
           "type": "object",
           "properties": {
-            "limit": {"type": "integer", "default": 50, "description": "最大返回数量"},
-            "project_id": {"type": "string", "default": "", "description": "项目 ID，空字符串使用默认项目"},
-            "mine": {"type": "boolean", "default": false, "description": "是否只获取分配给当前用户的缺陷"}
+            "limit": {
+              "type": "integer",
+              "default": 50,
+              "description": "最大返回数量"
+            },
+            "project_id": {
+              "type": "string",
+              "default": "",
+              "description": "项目 ID，空字符串使用默认项目"
+            },
+            "mine": {
+              "type": "boolean",
+              "default": false,
+              "description": "是否只获取分配给当前用户的缺陷"
+            }
           },
           "required": []
         }
@@ -21,7 +33,11 @@
       "function": {
         "name": "fetch_my_defects",
         "description": "获取当前登录用户被分配的缺陷列表",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
       }
     },
     {
@@ -32,7 +48,11 @@
         "parameters": {
           "type": "object",
           "properties": {
-            "mine": {"type": "boolean", "default": true, "description": "是否只检查自己的缺陷"}
+            "mine": {
+              "type": "boolean",
+              "default": true,
+              "description": "是否只检查自己的缺陷"
+            }
           },
           "required": []
         }
@@ -46,9 +66,14 @@
         "parameters": {
           "type": "object",
           "properties": {
-            "issue_id": {"type": "string", "description": "缺陷的 uuid"}
+            "issue_id": {
+              "type": "string",
+              "description": "缺陷的 uuid"
+            }
           },
-          "required": ["issue_id"]
+          "required": [
+            "issue_id"
+          ]
         }
       }
     },
@@ -60,7 +85,11 @@
         "parameters": {
           "type": "object",
           "properties": {
-            "include_archived": {"type": "boolean", "default": false, "description": "是否包含已归档项目"}
+            "include_archived": {
+              "type": "boolean",
+              "default": false,
+              "description": "是否包含已归档项目"
+            }
           },
           "required": []
         }
@@ -74,9 +103,21 @@
         "parameters": {
           "type": "object",
           "properties": {
-            "query": {"type": "string", "default": "", "description": "关键词搜索，空格分隔多个关键词"},
-            "read_file": {"type": "string", "default": "", "description": "要读取的文件相对路径"},
-            "max_depth": {"type": "integer", "default": 3, "description": "目录树最大深度"}
+            "query": {
+              "type": "string",
+              "default": "",
+              "description": "关键词搜索，空格分隔多个关键词"
+            },
+            "read_file": {
+              "type": "string",
+              "default": "",
+              "description": "要读取的文件相对路径"
+            },
+            "max_depth": {
+              "type": "integer",
+              "default": 3,
+              "description": "目录树最大深度"
+            }
           },
           "required": []
         }
@@ -90,9 +131,195 @@
         "parameters": {
           "type": "object",
           "properties": {
-            "content": {"type": "string", "description": "Markdown 格式的消息内容"}
+            "content": {
+              "type": "string",
+              "description": "Markdown 格式的消息内容"
+            }
           },
-          "required": ["content"]
+          "required": [
+            "content"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "list_project_issue_types",
+        "description": "获取项目启用的工作项类型；使用返回的精确 ID 查询需求。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "list_iterations",
+        "description": "获取 ONES 项目的迭代列表。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "list_team_members",
+        "description": "获取团队成员，可按精确用户 UUID 筛选。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "uuids": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "default": null
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "list_role_members",
+        "description": "获取 ONES 项目角色成员。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "fetch_requirements",
+        "description": "按项目和精确需求类型 ID 查询需求，最多返回 100 条。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project_id": {
+              "type": "string"
+            },
+            "issue_type_id": {
+              "type": "string"
+            },
+            "sprint_id": {
+              "type": "string",
+              "default": ""
+            },
+            "assignee": {
+              "type": "string",
+              "default": ""
+            },
+            "status_ids": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "default": null
+            },
+            "limit": {
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          "required": [
+            "project_id",
+            "issue_type_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_requirement_detail",
+        "description": "获取归一化需求详情，包含关联 Wiki 引用。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "issue_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "issue_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "list_comments",
+        "description": "读取工作项评论，不写入 ONES。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "item_id": {
+              "type": "string"
+            },
+            "page_size": {
+              "type": "integer",
+              "default": 200
+            }
+          },
+          "required": [
+            "item_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_wiki_page",
+        "description": "读取配置的 ONES 团队 Wiki URL，返回正文、版本与内容摘要。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "url"
+          ]
         }
       }
     }

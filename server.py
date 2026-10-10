@@ -15,12 +15,15 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from fastmcp import FastMCP
 
 from src.integrations.ones import OnesClient
 from src.integrations.codebase import Codebase
 from src.integrations.wechat import WeChatBot
 from src.core.store import Store
+from src.services.ones_gateway import OnesGateway
 from config import CODEBASE_PATH, REPO_URL, REPO_BRANCH
 
 _ones = OnesClient()
@@ -29,6 +32,77 @@ _codebase = Codebase(path=CODEBASE_PATH or None, repo_url=REPO_URL or None, bran
 _bot = WeChatBot()
 
 mcp = FastMCP("ONES Defect Agent")
+
+
+# 新 ONES 能力统一复用网关；每次调用释放网络客户端。
+@mcp.tool
+async def list_project_issue_types(project_id: str) -> list[dict]:
+    """获取项目启用的工作项类型；使用返回的精确 ID 查询需求。"""
+    async with OnesGateway() as gateway:
+        return [asdict(item) for item in await gateway.list_project_issue_types(project_id)]
+
+
+@mcp.tool
+async def list_iterations(project_id: str) -> list[dict]:
+    """获取 ONES 项目的迭代列表。"""
+    async with OnesGateway() as gateway:
+        return await gateway.list_iterations(project_id)
+
+
+@mcp.tool
+async def list_team_members(uuids: list[str] | None = None) -> list[dict]:
+    """获取团队成员，可按精确用户 UUID 筛选。"""
+    async with OnesGateway() as gateway:
+        return await gateway.list_team_members(uuids=uuids)
+
+
+@mcp.tool
+async def list_role_members(project_id: str) -> list[dict]:
+    """获取 ONES 项目角色成员。"""
+    async with OnesGateway() as gateway:
+        return await gateway.list_role_members(project_id)
+
+
+@mcp.tool
+async def fetch_requirements(
+    project_id: str,
+    issue_type_id: str,
+    sprint_id: str = "",
+    assignee: str = "",
+    status_ids: list[str] | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """按项目和精确需求类型 ID 查询需求，最多返回 100 条。"""
+    if not project_id.strip() or not issue_type_id.strip():
+        raise ValueError("project_id 和 issue_type_id 必填")
+    async with OnesGateway() as gateway:
+        items = await gateway.list_requirements(
+            project_id=project_id, issue_type_id=issue_type_id,
+            sprint_id=sprint_id or None, assignee=assignee or None,
+            status_ids=status_ids, limit=limit,
+        )
+        return [asdict(item) for item in items]
+
+
+@mcp.tool
+async def get_requirement_detail(issue_id: str) -> dict:
+    """获取归一化需求详情，包含关联 Wiki 引用。"""
+    async with OnesGateway() as gateway:
+        return asdict(await gateway.get_normalized_requirement(issue_id))
+
+
+@mcp.tool
+async def list_comments(item_id: str, page_size: int = 200) -> list[dict[str, str]]:
+    """读取工作项评论，不写入 ONES。"""
+    async with OnesGateway() as gateway:
+        return await gateway.list_comments(item_id, page_size=page_size)
+
+
+@mcp.tool
+async def get_wiki_page(url: str) -> dict:
+    """读取配置的 ONES 团队 Wiki URL，返回正文、版本与内容摘要。"""
+    async with OnesGateway() as gateway:
+        return asdict(await gateway.get_wiki_snapshot(url))
 
 
 # ── 缺陷数据 ──────────────────────────────────────────

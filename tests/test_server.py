@@ -1,6 +1,10 @@
 """server.py 测试 - MCP tools（纯数据提供者）"""
 
-from unittest.mock import MagicMock
+from dataclasses import dataclass
+import ast
+import json
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -169,3 +173,99 @@ class TestPushToWechatTool:
 
         mock_bot.send_markdown.assert_called_once_with("## Alert")
         assert "已发送" in result
+
+
+@pytest.mark.parametrize(
+    "tool,method,args,kwargs,normalized",
+    [
+        ("list_project_issue_types", "list_project_issue_types", ("p1",), {}, True),
+        ("list_iterations", "list_iterations", ("p1",), {}, False),
+        ("list_team_members", "list_team_members", (), {"uuids": ["u1"]}, False),
+        ("list_role_members", "list_role_members", ("p1",), {}, False),
+        ("list_comments", "list_comments", ("d1",), {"page_size": 200}, False),
+        ("get_requirement_detail", "get_normalized_requirement", ("r1",), {}, True),
+        ("get_wiki_page", "get_wiki_snapshot", ("https://ones/wiki/",), {}, True),
+    ],
+)
+async def test_unified_ones_tools(monkeypatch, tool, method, args, kwargs, normalized):
+    @dataclass
+    class Record:
+        id: str = "item1"
+
+    gateway = MagicMock()
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=gateway)
+    context.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(server, "OnesGateway", lambda: context)
+    value = Record() if normalized else {"id": "item1"}
+    is_detail = tool.startswith("get_")
+    getattr(gateway, method).return_value = None
+    setattr(gateway, method, AsyncMock(return_value=value if is_detail else [value]))
+
+    result = await getattr(server, tool)(*args, **kwargs)
+
+    getattr(gateway, method).assert_awaited_once_with(*args, **kwargs)
+    assert result == ({"id": "item1"} if is_detail else [{"id": "item1"}])
+    context.__aexit__.assert_awaited_once()
+
+
+async def test_requirement_filters_and_cleanup_on_failure(monkeypatch):
+    gateway = MagicMock()
+    gateway.list_requirements = AsyncMock(side_effect=ValueError("invalid limit"))
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=gateway)
+    context.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(server, "OnesGateway", lambda: context)
+    with pytest.raises(ValueError, match="invalid limit"):
+        await server.fetch_requirements("p1", "type1", limit=101)
+    gateway.list_requirements.assert_awaited_once_with(
+        project_id="p1", issue_type_id="type1", sprint_id=None,
+        assignee=None, status_ids=None, limit=101,
+    )
+    context.__aexit__.assert_awaited_once()
+    gateway.list_requirements.reset_mock()
+    with pytest.raises(ValueError, match="必填"):
+        await server.fetch_requirements("p1", " ")
+    gateway.list_requirements.assert_not_awaited()
+
+
+async def test_requirement_results_are_serializable(monkeypatch):
+    from src.contracts import RequirementRecord
+
+    gateway = MagicMock()
+    gateway.list_requirements = AsyncMock(return_value=[RequirementRecord(requirement_id="r1")])
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=gateway)
+    context.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(server, "OnesGateway", lambda: context)
+
+    result = await server.fetch_requirements(
+        "p1", "type1", sprint_id="s1", assignee="u1", status_ids=["status1"], limit=10,
+    )
+
+    assert json.loads(json.dumps(result))[0]["requirement_id"] == "r1"
+    gateway.list_requirements.assert_awaited_once_with(
+        project_id="p1", issue_type_id="type1", sprint_id="s1",
+        assignee="u1", status_ids=["status1"], limit=10,
+    )
+    context.__aexit__.assert_awaited_once()
+
+
+def test_mcp_contract_names_parameters_and_documentation_match():
+    root = Path(server.__file__).parent
+    tree = ast.parse((root / "server.py").read_text(encoding="utf-8"))
+    definitions = {
+        node.name: node for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(ast.unparse(decorator) == "mcp.tool" for decorator in node.decorator_list)
+    }
+    schema = json.loads((root / "tools.json").read_text(encoding="utf-8"))
+    functions = {item["function"]["name"]: item["function"] for item in schema["tools"]}
+    assert definitions.keys() == functions.keys()
+    document = (root / "skill.md").read_text(encoding="utf-8")
+    for name, node in definitions.items():
+        parameters = functions[name]["parameters"]
+        assert set(parameters["properties"]) == {arg.arg for arg in node.args.args}
+        required_count = len(node.args.args) - len(node.args.defaults)
+        assert parameters["required"] == [arg.arg for arg in node.args.args[:required_count]]
+        assert name in document
