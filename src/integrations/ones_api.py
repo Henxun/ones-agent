@@ -16,6 +16,7 @@ import structlog
 
 from src.utils.encrypt import JSEncryptPython
 from src.integrations.ones_common import quote_wiki_segment, validate_wiki_segment
+from src.integrations.ones_manhour import ADD_MANHOUR, LIST_MANHOURS, UPDATE_MANHOUR
 from config.settings import OnesSettings
 
 log = structlog.get_logger()
@@ -1035,6 +1036,40 @@ class OnesAsyncClient:
         return result.get("data", result)
 
     # ── 数据获取 ──────────────────────────────────────────
+
+    async def list_manhours(self, variables: dict) -> dict:
+        return await self._graphql(LIST_MANHOURS, variables, t="UserManhoursTimeSeries")
+
+    async def add_manhour(self, variables: dict) -> dict:
+        return await self._graphql(ADD_MANHOUR, variables, t="AddManhour")
+
+    async def update_manhour(self, variables: dict) -> dict:
+        return await self._graphql(UPDATE_MANHOUR, variables, t="UpdateManhour")
+
+    async def fetch_task_creation_metadata(self, project_id: str) -> dict:
+        project_id = quote_wiki_segment(project_id, label="project")
+        base = f"{self._base_url}/project/api/project/team/{self._team_id}"
+        client = await self._get_client()
+        project_response = await client.post(
+            f"{base}/project/{project_id}/stamps/data?t=field_config,issue_type_config",
+            json={"field_config": 0, "issue_type_config": 0},
+        )
+        project_response.raise_for_status()
+        team_response = await client.post(
+            f"{base}/stamps/data?t=task_field,task_field_option",
+            json={"task_field": 0, "task_field_option": 0},
+        )
+        team_response.raise_for_status()
+        return {"project": project_response.json(), "team": team_response.json()}
+
+    async def create_task(self, task: dict) -> dict:
+        client = await self._get_client()
+        response = await client.post(
+            f"{self._base_url}/project/api/project/team/{self._team_id}/tasks/add3",
+            json={"tasks": [task]},
+        )
+        response.raise_for_status()
+        return response.json()
 
     async def fetch_projects(self, include_archived: bool = False) -> list[dict]:
         filters: list[dict] = [{"visibleInProject_equal": True}]

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+from threading import RLock
 
 import requests
 import structlog
@@ -18,6 +19,7 @@ from config import (
 )
 from src.utils.encrypt import JSEncryptPython
 from src.integrations.ones_common import quote_wiki_segment, validate_wiki_segment
+from src.integrations.ones_manhour import ADD_MANHOUR, LIST_MANHOURS, UPDATE_MANHOUR
 
 log = structlog.get_logger()
 
@@ -810,6 +812,8 @@ class OnesClient:
     ):
         self.base_url = base_url.rstrip("/")
         self.session = requests.Session()
+        self._auth_lock = RLock()
+        self._org_user_uuid = ""
         self.team_id = team_id
         self.project_id = project_id
         self.issue_type_id = issue_type_id
@@ -839,6 +843,7 @@ class OnesClient:
         org_user = resp.json()["org_users"][0]
         org_uuid = org_user["org_uuid"]
         org_user_uuid = org_user["org_user"]["org_user_uuid"]
+        self._org_user_uuid = str(org_user_uuid)
 
         verifier = _code_verifier()
         challenge = _code_challenge(verifier)
@@ -895,15 +900,59 @@ class OnesClient:
     def _graphql_url(self, t: str = "group-task-data") -> str:
         return f"{self.base_url}/project/api/project/team/{self.team_id}/items/graphql?t={t}"
 
-    def _graphql(self, query: str, variables: dict, t: str = "group-task-data") -> dict:
-        resp = self.session.post(
-            self._graphql_url(t),
-            json={"query": query, "variables": variables},
-            headers={"Content-Type": "application/json;charset=UTF-8"},
-        )
-        resp.raise_for_status()
-        result = resp.json()
-        return result.get("data", result)
+    def _graphql(
+        self, query: str, variables: dict, t: str = "group-task-data", *,
+        timeout: float | None = None, strict_errors: bool = False,
+    ) -> dict:
+        with self._auth_lock:
+            resp = self.session.post(
+                self._graphql_url(t),
+                json={"query": query, "variables": variables},
+                headers={"Content-Type": "application/json;charset=UTF-8"},
+                **({"timeout": timeout} if timeout is not None else {}),
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            if strict_errors and isinstance(result, dict) and result.get("errors"):
+                raise OnesPayloadError("ONES GraphQL response contains errors")
+            return result.get("data", result)
+
+    def list_manhours(self, variables: dict) -> dict:
+        return self._graphql(LIST_MANHOURS, variables, t="UserManhoursTimeSeries", timeout=30.0, strict_errors=True)
+
+    def add_manhour(self, variables: dict) -> dict:
+        return self._graphql(ADD_MANHOUR, variables, t="AddManhour", timeout=30.0, strict_errors=True)
+
+    def update_manhour(self, variables: dict) -> dict:
+        return self._graphql(UPDATE_MANHOUR, variables, t="UpdateManhour", timeout=30.0, strict_errors=True)
+
+    def fetch_current_user_identity(self) -> dict[str, str]:
+        return {"uuid": self._org_user_uuid} if self._org_user_uuid else {}
+
+    def fetch_task_creation_metadata(self, project_id: str) -> dict:
+        project_id = quote_wiki_segment(project_id, label="project")
+        base = f"{self.base_url}/project/api/project/team/{self.team_id}"
+        with self._auth_lock:
+            project_response = self.session.post(
+                f"{base}/project/{project_id}/stamps/data?t=field_config,issue_type_config",
+                json={"field_config": 0, "issue_type_config": 0}, timeout=30.0,
+            )
+            project_response.raise_for_status()
+            team_response = self.session.post(
+                f"{base}/stamps/data?t=task_field,task_field_option",
+                json={"task_field": 0, "task_field_option": 0}, timeout=30.0,
+            )
+            team_response.raise_for_status()
+            return {"project": project_response.json(), "team": team_response.json()}
+
+    def create_task(self, task: dict) -> dict:
+        with self._auth_lock:
+            response = self.session.post(
+                f"{self.base_url}/project/api/project/team/{self.team_id}/tasks/add3",
+                json={"tasks": [task]}, timeout=30.0,
+            )
+            response.raise_for_status()
+            return response.json()
 
     def fetch_projects(self, include_archived: bool = False) -> list[dict]:
         filters: list[dict] = [{"visibleInProject_equal": True}]

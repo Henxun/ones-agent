@@ -99,6 +99,53 @@ async def list_comments(item_id: str, page_size: int = 200) -> list[dict[str, st
 
 
 @mcp.tool
+async def get_task_create_fields(project_id: str, issue_type_id: str) -> list[dict]:
+    """查询指定项目任务类型的字段、必填配置、默认值和选项。"""
+    async with OnesGateway() as gateway:
+        return await gateway.get_task_create_fields(project_id, issue_type_id)
+
+
+@mcp.tool
+async def create_task(
+    project_id: str, issue_type_id: str, title: str,
+    assignee_id: str = "", field_values: list[dict] | None = None,
+) -> dict:
+    """在指定项目创建任务，返回可用于登记工时的 task_id。
+
+    先通过 get_task_create_fields 查询配置。field_values 每项包含 field_id 和
+    value；日期类型还需 date_value（YYYY-MM-DD），value 为当天零点的 Unix 秒数。
+    负责人默认为当前用户。创建结果不确定时，请先按错误中的任务 ID 查询，勿直接重试。
+    """
+    async with OnesGateway() as gateway:
+        return await gateway.create_task(project_id, issue_type_id, title, assignee_id, field_values)
+
+
+@mcp.tool
+async def list_manhours(owner_id: str, start_date: str = "", end_date: str = "", task_id: str = "") -> list[dict]:
+    """查询成员的实际工时明细；可按工作项筛选，日期省略时查询本周。"""
+    async with OnesGateway() as gateway:
+        return await gateway.list_manhours(owner_id, start_date=start_date, end_date=end_date, task_id=task_id)
+
+
+@mcp.tool
+async def add_manhour(
+    owner_id: str, task_id: str, start_time: int, hours: float, description: str = ""
+) -> dict[str, str]:
+    """登记实际工时；start_time 为秒级 Unix 时间戳，hours 的单位为小时。"""
+    async with OnesGateway() as gateway:
+        return await gateway.add_manhour(owner_id, task_id, start_time, hours, description)
+
+
+@mcp.tool
+async def update_manhour(
+    key: str, owner_id: str, task_id: str, start_time: int, hours: float, description: str
+) -> dict[str, str]:
+    """修改实际工时；传入完整记录 key 和所有字段，description 可为空字符串。"""
+    async with OnesGateway() as gateway:
+        return await gateway.update_manhour(key, owner_id, task_id, start_time, hours, description)
+
+
+@mcp.tool
 async def get_wiki_page(url: str) -> dict:
     """读取配置的 ONES 团队 Wiki URL，返回正文、版本与内容摘要。"""
     async with OnesGateway() as gateway:

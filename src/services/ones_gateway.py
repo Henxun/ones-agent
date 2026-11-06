@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import math
 import re
+import secrets
 import time
 from typing import TYPE_CHECKING, Callable, Iterable, Sequence
 from urllib.parse import unquote, urlsplit
@@ -310,6 +312,355 @@ class OnesGateway:
     def get_normalized_requirement_sync(self, issue_id: str) -> RequirementRecord:
         detail = self._call_sync("fetch_issue_detail", issue_id)
         return self.normalize_requirement(self._resolve_issue_detail(detail, issue_id))
+
+    async def get_task_create_fields(self, project_id: str, issue_type_id: str) -> list[dict]:
+        project_id, issue_type_id = self._task_creation_ids(project_id, issue_type_id)
+        issue_types = await self.list_project_issue_types(project_id)
+        self._require_task_issue_type(issue_types, issue_type_id)
+        payload = await self._call_async("fetch_task_creation_metadata", project_id)
+        return self._normalize_task_create_fields(payload, project_id, issue_type_id)
+
+    def get_task_create_fields_sync(self, project_id: str, issue_type_id: str) -> list[dict]:
+        project_id, issue_type_id = self._task_creation_ids(project_id, issue_type_id)
+        issue_types = self.list_project_issue_types_sync(project_id)
+        self._require_task_issue_type(issue_types, issue_type_id)
+        payload = self._call_sync("fetch_task_creation_metadata", project_id)
+        return self._normalize_task_create_fields(payload, project_id, issue_type_id)
+
+    async def create_task(
+        self, project_id: str, issue_type_id: str, title: str,
+        assignee_id: str = "", field_values: list[dict] | None = None,
+    ) -> dict:
+        project_id, issue_type_id = self._task_creation_ids(project_id, issue_type_id)
+        self._validate_task_title(title)
+        if assignee_id:
+            self._manhour_id(assignee_id, "assignee_id")
+        fields = await self.get_task_create_fields(project_id, issue_type_id)
+        creator = await self.get_current_user_id()
+        task = self._build_new_task(project_id, issue_type_id, title, creator, assignee_id, field_values, fields)
+        try:
+            payload = await self._call_async("create_task", task)
+        except OnesGatewayAuthError:
+            raise
+        except OnesGatewayError as exc:
+            raise type(exc)(f"ONES task creation failed; outcome unknown, task_id={task['uuid']}") from exc
+        return self._normalize_created_task(payload, task["uuid"])
+
+    def create_task_sync(
+        self, project_id: str, issue_type_id: str, title: str,
+        assignee_id: str = "", field_values: list[dict] | None = None,
+    ) -> dict:
+        project_id, issue_type_id = self._task_creation_ids(project_id, issue_type_id)
+        self._validate_task_title(title)
+        if assignee_id:
+            self._manhour_id(assignee_id, "assignee_id")
+        fields = self.get_task_create_fields_sync(project_id, issue_type_id)
+        identity = self._call_sync("fetch_current_user_identity")
+        creator = identity.get("uuid") if isinstance(identity, dict) else None
+        if not isinstance(creator, str) or not creator:
+            raise OnesGatewayPayloadError("Malformed ONES current user identity")
+        task = self._build_new_task(project_id, issue_type_id, title, creator, assignee_id, field_values, fields)
+        try:
+            payload = self._call_sync("create_task", task)
+        except OnesGatewayAuthError:
+            raise
+        except OnesGatewayError as exc:
+            raise type(exc)(f"ONES task creation failed; outcome unknown, task_id={task['uuid']}") from exc
+        return self._normalize_created_task(payload, task["uuid"])
+
+    @classmethod
+    def _task_creation_ids(cls, project_id: str, issue_type_id: str) -> tuple[str, str]:
+        for label, value in (("project_id", project_id), ("issue_type_id", issue_type_id)):
+            if type(value) is not str or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
+                raise ValueError(f"{label} must be an exact ONES UUID")
+        return project_id, issue_type_id
+
+    @staticmethod
+    def _require_task_issue_type(issue_types: list[IssueTypeRef], issue_type_id: str) -> None:
+        if not any(item.id == issue_type_id and item.component_type == "task" for item in issue_types):
+            raise ValueError("issue_type_id must identify a task type enabled in this project")
+
+    @classmethod
+    def _normalize_task_create_fields(cls, payload: object, project_id: str, issue_type_id: str) -> list[dict]:
+        try:
+            project = payload["project"]
+            team = payload["team"]
+            configs = project["field_config"]["field_configs"]
+            issue_configs = project["issue_type_config"]["issue_type_configs"]
+            definitions = team["task_field"]["fields"]
+            options = team["task_field_option"]["options"]
+        except (KeyError, TypeError):
+            raise OnesGatewayPayloadError("Malformed ONES task creation metadata") from None
+        if not all(isinstance(rows, list) for rows in (configs, issue_configs, definitions, options)):
+            raise OnesGatewayPayloadError("Malformed ONES task creation metadata")
+        if not any(isinstance(x, dict) and x.get("project_uuid") == project_id and x.get("issue_type_uuid") == issue_type_id for x in issue_configs):
+            raise OnesGatewayPayloadError("ONES task type configuration not found for project")
+        by_id = {x.get("uuid"): x for x in definitions if isinstance(x, dict) and isinstance(x.get("uuid"), str)}
+        system_ids = {"field001", "field003", "field004", "field005", "field006", "field007", "field008", "field016"}
+        result = []
+        seen = set()
+        for config in configs:
+            if not isinstance(config, dict):
+                raise OnesGatewayPayloadError("Malformed ONES task field config")
+            if config.get("project_uuid") != project_id or config.get("issue_type_uuid") != issue_type_id:
+                continue
+            identity = config.get("field_uuid")
+            definition = by_id.get(identity)
+            if not isinstance(identity, str) or not isinstance(definition, dict) or identity in seen:
+                raise OnesGatewayPayloadError("Malformed or ambiguous ONES task field config")
+            seen.add(identity)
+            field_type = config.get("type")
+            name = definition.get("name")
+            if type(field_type) is not int or not isinstance(name, str) or not name:
+                raise OnesGatewayPayloadError("Malformed ONES task field definition")
+            field_options = []
+            if field_type == 1:
+                for option in options:
+                    if isinstance(option, dict) and option.get("field_uuid") == identity:
+                        if not isinstance(option.get("uuid"), str) or not isinstance(option.get("value"), str):
+                            raise OnesGatewayPayloadError("Malformed ONES task field option")
+                        field_options.append({"id": option["uuid"], "name": option["value"]})
+            result.append({"field_id": identity, "name": name, "type": field_type,
+                           "required": bool(config.get("required")), "generated": bool(config.get("generated")),
+                           "system_managed": identity in system_ids,
+                           "default_value": config.get("default_value"), "options": field_options,
+                           "option_configs": config.get("option_configs")})
+        if not result:
+            raise OnesGatewayPayloadError("ONES task field configuration is empty")
+        return result
+
+    @staticmethod
+    def _validate_task_title(title: str) -> None:
+        if type(title) is not str or not title.strip() or any(ord(c) < 32 for c in title):
+            raise ValueError("title must be non-empty single-line text")
+        try:
+            title.encode("utf-8", "strict")
+        except UnicodeError:
+            raise ValueError("title must be valid UTF-8") from None
+
+    @classmethod
+    def _build_new_task(
+        cls, project_id: str, issue_type_id: str, title: str, creator: str, assignee_id: str,
+        field_values: list[dict] | None, fields: list[dict],
+    ) -> dict:
+        cls._validate_task_title(title)
+        creator = cls._manhour_id(creator, "current user")
+        assignee = cls._manhour_id(assignee_id or creator, "assignee_id")
+        if field_values is None:
+            field_values = []
+        if not isinstance(field_values, list):
+            raise ValueError("field_values must be a list")
+        configs = {field["field_id"]: field for field in fields}
+        provided: dict[str, dict] = {}
+        for item in field_values:
+            if not isinstance(item, dict) or set(item) - {"field_id", "value", "date_value"}:
+                raise ValueError("each field must contain field_id, value, and optional date_value")
+            identity = item.get("field_id")
+            config = configs.get(identity) if isinstance(identity, str) else None
+            if not config or config["generated"] or config["system_managed"] or identity in provided:
+                raise ValueError("field_id is unknown, duplicated, or managed by ONES")
+            provided[identity] = cls._task_create_field_value(config, item)
+        for identity, config in configs.items():
+            if identity in provided or config["generated"] or config["system_managed"]:
+                continue
+            if config["type"] == 1 and isinstance(config["default_value"], str) and not config["default_value"].startswith("$"):
+                provided[identity] = cls._task_create_field_value(config, {"field_id": identity, "value": config["default_value"]})
+            elif config["required"]:
+                raise ValueError(f"Required task field is missing: {identity} ({config['name']})")
+        suffix = "".join(secrets.choice("123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxy") for _ in range(8))
+        task_id = creator + suffix
+        return {"uuid": task_id, "assign": assignee, "summary": title, "parent_uuid": "",
+                "field_values": [{"field_uuid": "field004", "type": 8, "value": assignee}, *provided.values(),
+                                 {"field_uuid": "field001", "type": 2, "value": title},
+                                 {"field_uuid": "field016", "type": 20, "value": None}],
+                "issue_type_uuid": issue_type_id, "project_uuid": project_id, "watchers": [creator]}
+
+    @staticmethod
+    def _task_create_field_value(config: dict, item: dict) -> dict:
+        field_type, value = config["type"], item.get("value")
+        if field_type in {1, 2, 7, 8}:
+            if not isinstance(value, str) or not value.strip() or "date_value" in item:
+                raise ValueError(f"Invalid value for task field {config['field_id']}")
+            if field_type in {1, 7, 8} and not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
+                raise ValueError(f"Expected a UUID for task field {config['field_id']}")
+        elif field_type == 5:
+            raw_date = item.get("date_value")
+            try:
+                if type(value) is not int or not 0 < value < 100_000_000_000 or type(raw_date) is not str:
+                    raise ValueError
+                if date.fromisoformat(raw_date).isoformat() != raw_date:
+                    raise ValueError
+            except ValueError:
+                raise ValueError(f"Date field {config['field_id']} needs seconds and date_value YYYY-MM-DD") from None
+        else:
+            raise ValueError(f"Task field type {field_type} is not supported")
+        result = {"field_uuid": config["field_id"], "type": field_type, "value": value}
+        if field_type == 5:
+            result["date_value"] = item["date_value"]
+        return result
+
+    @staticmethod
+    def _normalize_created_task(payload: object, task_id: str) -> dict:
+        if not isinstance(payload, dict) or not isinstance(payload.get("bad_tasks", []), list):
+            raise OnesGatewayPayloadError(f"Malformed ONES task creation response; outcome unknown, task_id={task_id}")
+        if payload.get("bad_tasks"):
+            raise OnesGatewayError(f"ONES rejected task creation, task_id={task_id}")
+        tasks = payload.get("tasks")
+        if not isinstance(tasks, list) or len(tasks) != 1 or not isinstance(tasks[0], dict) or tasks[0].get("uuid") != task_id:
+            raise OnesGatewayPayloadError(f"Malformed ONES task creation response; outcome unknown, task_id={task_id}")
+        return {"task_id": task_id, "number": tasks[0].get("number")}
+
+    async def list_manhours(
+        self, owner_id: str, *, start_date: str = "", end_date: str = "", task_id: str = ""
+    ) -> list[dict]:
+        variables = self._manhour_list_variables(owner_id, start_date, end_date)
+        if task_id:
+            self._manhour_task_id(task_id)
+        records = self._normalize_manhours(await self._call_async("list_manhours", variables))
+        return [record for record in records if record["task_id"] == task_id] if task_id else records
+
+    def list_manhours_sync(
+        self, owner_id: str, *, start_date: str = "", end_date: str = "", task_id: str = ""
+    ) -> list[dict]:
+        variables = self._manhour_list_variables(owner_id, start_date, end_date)
+        if task_id:
+            self._manhour_task_id(task_id)
+        records = self._normalize_manhours(self._call_sync("list_manhours", variables))
+        return [record for record in records if record["task_id"] == task_id] if task_id else records
+
+    async def add_manhour(
+        self, owner_id: str, task_id: str, start_time: int, hours: float, description: str = ""
+    ) -> dict[str, str]:
+        variables = self._manhour_write_variables(owner_id, task_id, start_time, hours, description)
+        payload = await self._call_async("add_manhour", variables)
+        return self._manhour_mutation_result(payload, "addManhour")
+
+    def add_manhour_sync(
+        self, owner_id: str, task_id: str, start_time: int, hours: float, description: str = ""
+    ) -> dict[str, str]:
+        variables = self._manhour_write_variables(owner_id, task_id, start_time, hours, description)
+        return self._manhour_mutation_result(self._call_sync("add_manhour", variables), "addManhour")
+
+    async def update_manhour(
+        self, key: str, owner_id: str, task_id: str, start_time: int, hours: float, description: str
+    ) -> dict[str, str]:
+        variables = self._manhour_write_variables(owner_id, task_id, start_time, hours, description, key)
+        payload = await self._call_async("update_manhour", variables)
+        return self._manhour_mutation_result(payload, "updateManhour", expected_key=key)
+
+    def update_manhour_sync(
+        self, key: str, owner_id: str, task_id: str, start_time: int, hours: float, description: str
+    ) -> dict[str, str]:
+        variables = self._manhour_write_variables(owner_id, task_id, start_time, hours, description, key)
+        payload = self._call_sync("update_manhour", variables)
+        return self._manhour_mutation_result(payload, "updateManhour", expected_key=key)
+
+    @staticmethod
+    def _manhour_id(value: str, label: str) -> str:
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+            raise ValueError(f"{label} must be an exact ONES identifier")
+        return value
+
+    @classmethod
+    def _manhour_task_id(cls, value: str) -> str:
+        task_id = cls._manhour_id(value, "task_id")
+        if task_id.startswith("task-"):
+            raise ValueError("task_id must be the work-item UUID, not its GraphQL key")
+        return task_id
+
+    @classmethod
+    def _manhour_list_variables(cls, owner_id: str, start_date: str, end_date: str) -> dict:
+        owner_id = cls._manhour_id(owner_id, "owner_id")
+        if start_date == "" and end_date == "":
+            interval = {"unit": "day", "quick": "this_week"}
+        else:
+            try:
+                if not isinstance(start_date, str) or not isinstance(end_date, str):
+                    raise ValueError
+                start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
+                if start.isoformat() != start_date or end.isoformat() != end_date or start > end:
+                    raise ValueError
+            except ValueError:
+                raise ValueError("start_date and end_date must be ordered YYYY-MM-DD dates") from None
+            interval = {"unit": "day", "from": start_date, "to": end_date}
+        return {
+            "manhoursGroupBy": {"manhours": {"startDate": {}}},
+            "manhoursFilter": {"owner_in": [owner_id], "startDate_range": interval, "type_in": ["recorded"]},
+            "manhoursOrderBy": {"createTime": "DESC"},
+        }
+
+    @classmethod
+    def _manhour_write_variables(
+        cls, owner_id: str, task_id: str, start_time: int, hours: float, description: str, key: str | None = None
+    ) -> dict:
+        owner_id = cls._manhour_id(owner_id, "owner_id")
+        task_id = cls._manhour_task_id(task_id)
+        if type(start_time) is not int or not 0 < start_time < 100_000_000_000:
+            raise ValueError("start_time must be a positive Unix timestamp in seconds")
+        try:
+            if isinstance(hours, bool) or not isinstance(hours, (int, float, Decimal)):
+                raise ValueError
+            number = Decimal(str(hours))
+            fixed = number * 100_000
+            if not number.is_finite() or number <= 0 or number > 9999 or fixed != fixed.to_integral_value():
+                raise ValueError
+        except (InvalidOperation, ValueError):
+            raise ValueError("hours must be positive, at most 9999, and have at most five decimal places") from None
+        if not isinstance(description, str):
+            raise ValueError("description must be text")
+        try:
+            description.encode("utf-8", "strict")
+        except UnicodeError:
+            raise ValueError("description must be valid UTF-8") from None
+        if any(ord(c) < 32 and c not in "\n\t" for c in description):
+            raise ValueError("description contains invalid control characters")
+        variables = {"mode": "simple", "owner": owner_id, "task": task_id, "type": "recorded",
+                     "start_time": start_time, "hours": int(fixed), "description": description}
+        if key is not None:
+            cls._manhour_id(key, "key")
+            if not key.startswith("manhour-") or len(key) == len("manhour-"):
+                raise ValueError("key must be the complete manhour-<uuid> key")
+            variables["key"] = key
+        return variables
+
+    @classmethod
+    def _normalize_manhours(cls, payload: object) -> list[dict]:
+        if not isinstance(payload, dict) or not isinstance(payload.get("buckets"), list):
+            raise OnesGatewayPayloadError("Malformed ONES work-hour query response")
+        records = []
+        for bucket in payload["buckets"]:
+            if not isinstance(bucket, dict) or not isinstance(bucket.get("manhours"), list):
+                raise OnesGatewayPayloadError("Malformed ONES work-hour bucket")
+            for item in bucket["manhours"]:
+                if not isinstance(item, dict) or not isinstance(item.get("owner"), dict) or not isinstance(item.get("task"), dict):
+                    raise OnesGatewayPayloadError("Malformed ONES work-hour record")
+                key, owner, task = item.get("key"), item["owner"].get("uuid"), item["task"].get("uuid")
+                raw_hours, started = item.get("hours"), item.get("startTime")
+                if (not isinstance(key, str) or not key.startswith("manhour-") or not isinstance(owner, str)
+                        or not owner or not isinstance(task, str) or not task or type(raw_hours) is not int
+                        or raw_hours < 0 or type(started) is not int or started <= 0):
+                    raise OnesGatewayPayloadError("Malformed ONES work-hour record")
+                description, name = item.get("description"), item["task"].get("name")
+                if ((description is not None and not isinstance(description, str))
+                        or (name is not None and not isinstance(name, str))):
+                    raise OnesGatewayPayloadError("Malformed ONES work-hour record")
+                permission = item.get("canUpdateRecordedHour")
+                if permission is not None and type(permission) is not bool:
+                    raise OnesGatewayPayloadError("Malformed ONES work-hour permission")
+                records.append({"key": key, "owner_id": owner, "task_id": task, "task_name": name or "",
+                                "start_time": started, "hours": raw_hours / 100_000,
+                                "description": description or "", "can_update": permission})
+        return records
+
+    @staticmethod
+    def _manhour_mutation_result(payload: object, operation: str, *, expected_key: str | None = None) -> dict[str, str]:
+        result = payload.get(operation) if isinstance(payload, dict) else None
+        key = result.get("key") if isinstance(result, dict) else None
+        if not isinstance(key, str) or not key.startswith("manhour-") or len(key) == len("manhour-"):
+            raise OnesGatewayPayloadError("Malformed ONES work-hour mutation response; outcome may be unknown")
+        if expected_key is not None and key != expected_key:
+            raise OnesGatewayPayloadError("Unexpected ONES work-hour mutation key; outcome may be unknown")
+        return {"key": key}
 
     async def list_comments(self, item_id: str, *, page_size: int = 200) -> list[dict[str, str]]:
         payload = await self._call_async("list_comments", self._comment_item_id(item_id), page_size=page_size)

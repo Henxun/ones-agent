@@ -308,6 +308,107 @@
     {
       "type": "function",
       "function": {
+        "name": "get_task_create_fields",
+        "description": "查询项目中任务类型的字段、必填配置、默认值和选项。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project_id": {"type": "string", "description": "项目 UUID"},
+            "issue_type_id": {"type": "string", "description": "项目启用的任务类型 UUID"}
+          },
+          "required": ["project_id", "issue_type_id"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "create_task",
+        "description": "在指定项目创建任务；仅在用户要求创建时调用。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project_id": {"type": "string", "description": "项目 UUID"},
+            "issue_type_id": {"type": "string", "description": "项目启用的任务类型 UUID"},
+            "title": {"type": "string", "description": "任务标题"},
+            "assignee_id": {"type": "string", "default": "", "description": "负责人 UUID，省略时为当前用户"},
+            "field_values": {
+              "type": ["array", "null"],
+              "default": null,
+              "description": "从 get_task_create_fields 获取字段 ID 和类型；日期字段的 value 为秒级时间戳，另提供 date_value。",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "field_id": {"type": "string"},
+                  "value": {"type": ["string", "integer"]},
+                  "date_value": {"type": "string", "description": "日期字段的 YYYY-MM-DD"}
+                },
+                "required": ["field_id", "value"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["project_id", "issue_type_id", "title"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "list_manhours",
+        "description": "按成员 UUID 查询实际工时明细；可按工作项筛选，日期省略时查询本周。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "owner_id": {"type": "string", "description": "登记成员的精确 UUID"},
+            "start_date": {"type": "string", "default": "", "description": "开始日期（含）；与 end_date 同时提供"},
+            "end_date": {"type": "string", "default": "", "description": "结束日期（含）；与 start_date 同时提供"},
+            "task_id": {"type": "string", "default": "", "description": "可选的工作项 UUID，查询后按工作项筛选"}
+          },
+          "required": ["owner_id"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "add_manhour",
+        "description": "登记实际工时；只在用户明确要求写入时调用。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "owner_id": {"type": "string", "description": "登记成员的精确 UUID"},
+            "task_id": {"type": "string", "description": "工作项 UUID，不是编号或 task- key"},
+            "start_time": {"type": "integer", "description": "秒级 Unix 时间戳"},
+            "hours": {"type": "number", "description": "实际投入小时数，最多五位小数，范围大于 0 且不超过 9999"},
+            "description": {"type": "string", "default": "", "description": "工时描述"}
+          },
+          "required": ["owner_id", "task_id", "start_time", "hours"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "update_manhour",
+        "description": "修改实际工时；必须传入完整记录和全部字段，只在用户明确要求写入时调用。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "key": {"type": "string", "description": "完整 manhour-<uuid> 记录 key"},
+            "owner_id": {"type": "string", "description": "登记成员的精确 UUID"},
+            "task_id": {"type": "string", "description": "工作项 UUID，不是编号或 task- key"},
+            "start_time": {"type": "integer", "description": "秒级 Unix 时间戳"},
+            "hours": {"type": "number", "description": "实际投入小时数，最多五位小数，范围大于 0 且不超过 9999"},
+            "description": {"type": "string", "description": "完整工时描述，空字符串会清空描述"}
+          },
+          "required": ["key", "owner_id", "task_id", "start_time", "hours", "description"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
         "name": "get_wiki_page",
         "description": "读取配置的 ONES 团队 Wiki URL，返回正文、版本与内容摘要。",
         "parameters": {
