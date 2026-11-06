@@ -16,8 +16,14 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import sys
 
 from fastmcp import FastMCP
+import structlog
+
+if __name__ == "__main__":
+    # MCP stdio reserves stdout for JSON-RPC messages, including during login.
+    structlog.configure(logger_factory=structlog.PrintLoggerFactory(file=sys.stderr))
 
 from src.integrations.ones import OnesClient
 from src.integrations.codebase import Codebase
@@ -86,7 +92,7 @@ async def fetch_requirements(
 
 @mcp.tool
 async def get_requirement_detail(issue_id: str) -> dict:
-    """获取归一化需求详情，包含关联 Wiki 引用。"""
+    """获取归一化需求详情；issue_id 使用列表返回的需求 UUID 或完整 task- key。"""
     async with OnesGateway() as gateway:
         return asdict(await gateway.get_normalized_requirement(issue_id))
 

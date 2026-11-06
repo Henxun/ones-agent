@@ -15,7 +15,7 @@ All tools below are available from the same `server.py` MCP service:
 | `list_team_members` | `uuids=null` | Team members, optionally filtered by UUID |
 | `list_role_members` | `project_id` | Project role members |
 | `fetch_requirements` | `project_id`, `issue_type_id`, `sprint_id=""`, `assignee=""`, `status_ids=null`, `limit=50` | Normalized requirements, limit 1–100 |
-| `get_requirement_detail` | `issue_id` | Normalized requirement including Wiki references |
+| `get_requirement_detail` | `issue_id` | Normalized requirement including Wiki references; accepts the requirement UUID or full `task-` key |
 | `list_comments` | `item_id`, `page_size=200` | Read-only comment evidence |
 | `get_wiki_page` | `url` | Wiki text, version, source URL and content hash |
 | `get_task_create_fields` | `project_id`, `issue_type_id` | Project task fields, required configuration, defaults and options |

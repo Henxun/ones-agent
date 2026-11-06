@@ -306,12 +306,20 @@ class OnesGateway:
         return self._build_wiki_snapshot(space_id, page_id, body, detail, source_url=source_url)
 
     async def get_normalized_requirement(self, issue_id: str) -> RequirementRecord:
-        detail = await self._call_async("fetch_issue_detail", issue_id)
+        detail = await self._call_async("fetch_issue_detail", self._requirement_detail_key(issue_id))
         return self.normalize_requirement(self._resolve_issue_detail(detail, issue_id))
 
     def get_normalized_requirement_sync(self, issue_id: str) -> RequirementRecord:
-        detail = self._call_sync("fetch_issue_detail", issue_id)
+        detail = self._call_sync("fetch_issue_detail", self._requirement_detail_key(issue_id))
         return self.normalize_requirement(self._resolve_issue_detail(detail, issue_id))
+
+    @staticmethod
+    def _requirement_detail_key(issue_id: str) -> str:
+        # ONES task UUIDs returned by this deployment are 16 alphanumeric characters;
+        # its Task GraphQL query requires the corresponding task- prefixed key.
+        if isinstance(issue_id, str) and re.fullmatch(r"[A-Za-z0-9]{16}", issue_id):
+            return f"task-{issue_id}"
+        return issue_id
 
     async def get_task_create_fields(self, project_id: str, issue_type_id: str) -> list[dict]:
         project_id, issue_type_id = self._task_creation_ids(project_id, issue_type_id)
@@ -965,8 +973,9 @@ class OnesGateway:
             identity = str(row.get("uuid") or row.get("key") or "").strip()
             if not identity:
                 raise OnesGatewayPayloadError("requirement list item has no identity")
-            detail = await self._call_async("fetch_issue_detail", identity)
-            requirements.append(self.normalize_requirement(detail))
+            lookup_key = str(row.get("key") or self._requirement_detail_key(identity)).strip()
+            detail = await self._call_async("fetch_issue_detail", lookup_key)
+            requirements.append(self.normalize_requirement(self._resolve_issue_detail(detail, identity)))
         return requirements
 
     async def list_current_user_defects(
@@ -1408,7 +1417,7 @@ class OnesGateway:
                 IdentityRef(
                     id=assignee_id,
                     name=self._optional_display_value(assignee, keys=("name",), context="requirement assignee name"),
-                    avatar=self._optional_display_value(assignee, keys=("avatar",), context="requirement assignee avatar"),
+                    avatar=self._optional_string(assignee.get("avatar"), context="requirement assignee avatar"),
                 )
                 if assignee_id
                 else None

@@ -269,7 +269,7 @@
       "type": "function",
       "function": {
         "name": "get_requirement_detail",
-        "description": "获取归一化需求详情，包含关联 Wiki 引用。",
+        "description": "获取归一化需求详情，包含关联 Wiki 引用；使用需求 UUID 或完整 task- key。",
         "parameters": {
           "type": "object",
           "properties": {
